@@ -1,0 +1,22 @@
+{
+  "hosts": [
+    {
+      "name": "local",
+      "mode": "local",
+      "claudeDir": "~/.claude"
+    },
+    {
+      "name": "dev-server",
+      "mode": "ssh",
+      "user": "ubuntu",
+      "host": "192.168.1.50",
+      "port": 22,
+      "claudeDir": "~/.claude",
+      "identityFile": "~/.ssh/id_ed25519"
+    }
+  ],
+  "server": {
+    "port": 3456,
+    "pollIntervalMs": 3000
+  }
+}
