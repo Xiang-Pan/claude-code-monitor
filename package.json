@@ -37,6 +37,25 @@
     "tmux",
     "developer-tools"
   ],
+  "author": "Xiang Pan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Xiang-Pan/claude-code-monitor.git"
+  },
+  "homepage": "https://github.com/Xiang-Pan/claude-code-monitor",
+  "bugs": {
+    "url": "https://github.com/Xiang-Pan/claude-code-monitor/issues"
+  },
+  "files": [
+    "server/",
+    "client/dist/",
+    "scripts/",
+    "config.example.json",
+    "hooks.example.json",
+    "share.py",
+    "LICENSE",
+    "README.md"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
