@@ -1,5 +1,7 @@
 # ⬡ Claude Code Monitor
 
+[English](README.md) | [中文](README_CN.md)
+
 A real-time dashboard for monitoring multiple Claude Code sessions across SSH hosts. Watch all your sessions at a glance — token usage, status, files changed, and more — without tab-hopping through terminals.
 
 <!-- TODO: add a screenshot to docs/preview.png -->
