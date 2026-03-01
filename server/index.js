@@ -10,6 +10,7 @@ import http from "http";
 import { Aggregator } from "./aggregator.js";
 import { createWatcher } from "./watcher.js";
 import { collectFromSSH, parseRemoteSessions } from "./ssh-collector.js";
+import { collectTmuxLocal, collectTmuxSSH } from "./tmux-collector.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -83,6 +84,35 @@ async function main() {
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", uptime: process.uptime() });
+  });
+
+  // ── Hook endpoint — Claude Code hooks POST here ────────
+  app.use("/api/hook", express.json());
+  app.post("/api/hook", (req, res) => {
+    const payload = req.body || {};
+    const event = payload.hook_event_name || "unknown";
+    const sessionId = payload.session_id || null;
+    const cwd = payload.cwd || null;
+    const project = cwd ? path.basename(cwd) : null;
+    const toolName = payload.tool_name || null;
+    const error = payload.tool_input?.error || payload.error || null;
+    const stopReason = payload.stop_reason || null;
+
+    console.log(`[hook] ${event}${project ? ` (${project})` : ""}${toolName ? ` tool=${toolName}` : ""}`);
+
+    // Broadcast to all connected dashboard clients
+    const notification = {
+      type: "hook",
+      data: { event, sessionId, project, cwd, toolName, error, stopReason, timestamp: Date.now(), raw: payload },
+    };
+    const msg = JSON.stringify(notification);
+    for (const client of wss.clients) {
+      if (client.readyState === client.OPEN) {
+        client.send(msg);
+      }
+    }
+
+    res.json({ ok: true });
   });
 
   // Serve the built client (production) or proxy to Vite (dev)
@@ -166,6 +196,25 @@ async function main() {
     setInterval(pollSSH, pollInterval);
   }
 
+  // ── Tmux status collection ─────────────────────────────
+  const pollTmux = async () => {
+    const tmuxJobs = config.hosts.map(async (hostConfig) => {
+      try {
+        const data = hostConfig.mode === "ssh"
+          ? await collectTmuxSSH(hostConfig)
+          : await collectTmuxLocal(hostConfig.name);
+        aggregator.updateTmux(data);
+      } catch (err) {
+        console.error(`[tmux] Failed to collect from ${hostConfig.name}:`, err.message);
+      }
+    });
+    await Promise.allSettled(tmuxJobs);
+  };
+
+  // Initial tmux poll + recurring
+  pollTmux();
+  setInterval(pollTmux, pollInterval);
+
   // ── WebSocket ────────────────────────────────────────────
   const wss = new WebSocketServer({ server, path: "/ws" });
 
@@ -189,10 +238,11 @@ async function main() {
         const msg = JSON.parse(raw);
         if (msg.type === "refresh") {
           console.log("[ws] Manual refresh requested");
-          // Re-scan local watchers + re-poll SSH hosts, then send fresh state
+          // Re-scan local watchers + re-poll SSH hosts + tmux, then send fresh state
           await Promise.allSettled([
             ...watchers.map((w) => w.rescan()),
             ...(pollSSH ? [pollSSH()] : []),
+            pollTmux(),
           ]);
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify({ type: "state", data: withMeta(aggregator.getState()) }));

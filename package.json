@@ -13,6 +13,7 @@
     "dev:client": "cd client && npx vite --port 3457",
     "build": "cd client && npx vite build",
     "start": "NODE_ENV=production node server/index.js",
+    "share": "uv run share.py",
     "status": "bash scripts/quick-status.sh"
   },
   "dependencies": {

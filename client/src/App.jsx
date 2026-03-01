@@ -126,6 +126,39 @@ function formatCost(cost) {
   return `$${cost.toFixed(2)}`;
 }
 
+// ─── Copy-to-clipboard command box ──────────────────────────
+function CopyCommand({ text }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [text]);
+  return (
+    <div
+      onClick={handleCopy}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "8px 10px", borderRadius: 4,
+        backgroundColor: C.accentDim, border: `1px solid ${C.accent}20`,
+        fontSize: 11, color: C.accent, fontFamily: "monospace",
+        cursor: "pointer", userSelect: "all",
+      }}
+      title="Click to copy"
+    >
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{text}</span>
+      <span style={{
+        flexShrink: 0, marginLeft: 8, fontSize: 10, padding: "2px 6px",
+        borderRadius: 3, backgroundColor: copied ? C.greenDim : `${C.accent}15`,
+        color: copied ? C.green : C.accent, transition: "all 0.2s",
+      }}>
+        {copied ? "Copied!" : "Copy"}
+      </span>
+    </div>
+  );
+}
+
 // ─── Persistent localStorage hook (Part 2F) ─────────────────
 function usePersistedState(key, defaultValue) {
   const [value, setValue] = useState(() => {
@@ -353,6 +386,12 @@ function SessionCard({ session, expanded, onToggle, isAgent }) {
         <span title="Last active">↻ {timeAgo(session.lastTimestamp)}</span>
         {session.model && <span style={{ color: C.textDim }}>{session.model.replace("claude-", "").replace(/-\d{8}$/, "")}</span>}
         {cost > 0 && <span title="Estimated cost" style={{ color: C.amber }}>~{formatCost(cost)}</span>}
+        {session.tmux && (
+          <Badge color={C.accent} bg={C.accentDim} title={`tmux: ${session.tmux.session}:${session.tmux.window}.${session.tmux.pane}`}>
+            tmux:{session.tmux.session}:{session.tmux.window}
+            {session.tmux.attached && " *"}
+          </Badge>
+        )}
       </div>
 
       {/* Expanded */}
@@ -407,9 +446,7 @@ function SessionCard({ session, expanded, onToggle, isAgent }) {
           <div style={{ display: "flex", gap: 8, fontSize: 11, color: C.textDim, fontFamily: "monospace", marginBottom: 8 }}>
             <span>ID: {session.sessionId || "—"}</span>
           </div>
-          <div style={{ padding: "8px 10px", borderRadius: 4, backgroundColor: C.accentDim, border: `1px solid ${C.accent}20`, fontSize: 11, color: C.accent, fontFamily: "monospace" }}>
-            ssh -t {session.host} 'tmux attach -t {session.project?.name || "session"}'
-          </div>
+          <CopyCommand text={`ssh -t ${session.host} 'tmux attach -t ${session.project?.name || "session"}'`} />
         </div>
       )}
     </div>
@@ -571,10 +608,172 @@ function HostStatus({ hosts, hostFilter, onHostClick }) {
   );
 }
 
+// ─── Tmux Status Panel ──────────────────────────────────
+
+function TmuxPanel({ tmux }) {
+  const [collapsed, setCollapsed] = usePersistedState("tmuxCollapsed", false);
+  const [expandedSession, setExpandedSession] = useState(null);
+
+  if (!tmux || tmux.length === 0) return null;
+
+  // Flatten all tmux sessions across hosts
+  const allSessions = [];
+  for (const hostData of tmux) {
+    for (const sess of hostData.sessions || []) {
+      allSessions.push({ ...sess, host: hostData.host, method: hostData.method });
+    }
+  }
+
+  if (allSessions.length === 0) return null;
+
+  // Count linked Claude sessions across all panes
+  const linkedCount = allSessions.reduce((n, sess) =>
+    n + (sess.windows || []).reduce((wn, win) =>
+      wn + (win.panes || []).filter(p => p.claudeSessions?.length > 0).length, 0), 0);
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div
+        onClick={() => setCollapsed(!collapsed)}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, marginBottom: collapsed ? 0 : 8,
+          cursor: "pointer", userSelect: "none",
+        }}
+      >
+        <span style={{ fontSize: 10, color: C.textDim, transform: collapsed ? "none" : "rotate(90deg)", transition: "transform 0.15s" }}>▸</span>
+        <span style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "monospace" }}>
+          Tmux Sessions
+        </span>
+        <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, backgroundColor: C.border, color: C.textMuted, fontFamily: "monospace" }}>
+          {allSessions.length}
+        </span>
+        {linkedCount > 0 && (
+          <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, backgroundColor: C.greenDim, color: C.green, fontFamily: "monospace" }}>
+            {linkedCount} linked
+          </span>
+        )}
+      </div>
+      {!collapsed && (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {allSessions.map((sess) => {
+          const uid = `${sess.host}:${sess.name}`;
+          const isExpanded = expandedSession === uid;
+          const createdDate = sess.created ? new Date(sess.created * 1000) : null;
+
+          return (
+            <div key={uid}>
+              <div
+                onClick={() => setExpandedSession(isExpanded ? null : uid)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                  borderRadius: 6, backgroundColor: C.surface,
+                  border: `1px solid ${isExpanded ? C.accent + "40" : C.border}`,
+                  cursor: "pointer", transition: "all 0.15s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.accent + "40"; e.currentTarget.style.backgroundColor = C.surfaceHover; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = isExpanded ? C.accent + "40" : C.border; e.currentTarget.style.backgroundColor = C.surface; }}
+              >
+                {/* Attached indicator */}
+                <span style={{
+                  width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+                  backgroundColor: sess.attached ? C.green : C.textDim,
+                }} />
+
+                {/* Session name */}
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#e2e5eb", fontFamily: "'JetBrains Mono', monospace", minWidth: 100 }}>
+                  {sess.name}
+                </span>
+
+                {/* Host badge */}
+                <Badge color={C.accent} bg={C.accentDim}>{sess.host}</Badge>
+
+                {/* Attached badge */}
+                {sess.attached && <Badge color={C.green} bg={C.greenDim}>attached</Badge>}
+
+                {/* Window count */}
+                <span style={{ fontSize: 11, color: C.textMuted, fontFamily: "monospace" }}>
+                  {sess.windowCount} {sess.windowCount === 1 ? "window" : "windows"}
+                </span>
+
+                {/* Created time */}
+                {createdDate && (
+                  <span style={{ fontSize: 10, color: C.textDim, fontFamily: "monospace", marginLeft: "auto" }}>
+                    {timeAgo(createdDate.toISOString())}
+                  </span>
+                )}
+
+                {/* Expand indicator */}
+                <span style={{ fontSize: 10, color: C.textDim, transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▸</span>
+              </div>
+
+              {/* Expanded: show windows and panes */}
+              {isExpanded && (
+                <div style={{ marginLeft: 20, marginTop: 4, display: "flex", flexDirection: "column", gap: 3, animation: "fadeIn 0.15s ease-out" }}>
+                  {(sess.windows || []).map((win) => (
+                    <div key={win.windowId} style={{
+                      padding: "6px 10px", borderRadius: 4,
+                      backgroundColor: win.active ? "rgba(34,211,238,0.04)" : "transparent",
+                      border: `1px solid ${win.active ? C.accent + "20" : C.border}`,
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: win.panes?.length > 0 ? 6 : 0 }}>
+                        <span style={{ fontSize: 11, fontWeight: 500, color: win.active ? C.accent : C.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
+                          {win.active ? "▸ " : "  "}{win.name}
+                        </span>
+                        <span style={{ fontSize: 10, color: C.textDim, fontFamily: "monospace" }}>
+                          {win.paneCount} {win.paneCount === 1 ? "pane" : "panes"}
+                        </span>
+                      </div>
+
+                      {/* Panes */}
+                      {(win.panes || []).map((pane) => (
+                        <div key={pane.paneId} style={{
+                          display: "flex", alignItems: "center", gap: 8,
+                          padding: "3px 8px", marginLeft: 12,
+                          fontSize: 10, fontFamily: "'JetBrains Mono', monospace",
+                          color: pane.active ? C.text : C.textMuted,
+                        }}>
+                          <span style={{
+                            width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
+                            backgroundColor: pane.active ? C.green : C.textDim,
+                          }} />
+                          <span style={{ color: C.purple, minWidth: 80 }}>{pane.command}</span>
+                          <span style={{ color: C.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 300 }}>
+                            {pane.cwd}
+                          </span>
+                          {/* Linked Claude sessions */}
+                          {pane.claudeSessions?.map((cs) => {
+                            const csStatus = STATUS_MAP[cs.status] || STATUS_MAP.completed;
+                            return (
+                              <Badge key={cs.sessionId} color={csStatus.color} bg={csStatus.bg}>
+                                {cs.project || cs.sessionId.slice(0, 6)} ({csStatus.label})
+                              </Badge>
+                            );
+                          })}
+                          <span style={{ color: C.textDim, marginLeft: "auto", flexShrink: 0 }}>
+                            {pane.width}x{pane.height}
+                          </span>
+                          <span style={{ color: C.textDim, flexShrink: 0 }}>
+                            pid:{pane.pid}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main App ───────────────────────────────────────────────
 
 export default function App() {
-  const { state, connected, pollIntervalMs, lastUpdated, requestRefresh } = useMonitorSocket();
+  const { state, connected, pollIntervalMs, lastUpdated, requestRefresh, hookEvents } = useMonitorSocket();
   const [expandedId, setExpandedId] = useState(null);
   const [filter, setFilter] = usePersistedState("filter", "all");
   const [folderFilter, setFolderFilter] = usePersistedState("folderFilter", "all");
@@ -622,6 +821,32 @@ export default function App() {
 
     prevStatusesRef.current = next;
   }, [state?.sessions]);
+
+  // ─── Hook event notifications ─────────────────────────────
+  const lastHookIdRef = useRef(null);
+  useEffect(() => {
+    if (hookEvents.length === 0) return;
+    const latest = hookEvents[0];
+    // Avoid re-firing for the same event
+    const eventKey = `${latest.event}:${latest.timestamp}`;
+    if (lastHookIdRef.current === eventKey) return;
+    lastHookIdRef.current = eventKey;
+
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+
+    const name = latest.project || "Claude Code";
+    if (latest.event === "Stop" || latest.event === "PostToolUseFailure") {
+      new Notification(`Hook: ${latest.event}`, {
+        body: `${name}${latest.error ? ` — ${latest.error}` : latest.toolName ? ` (${latest.toolName})` : ""}`,
+        tag: eventKey,
+      });
+    } else if (latest.event === "Notification") {
+      new Notification(`Claude Code`, {
+        body: `${name} needs attention`,
+        tag: eventKey,
+      });
+    }
+  }, [hookEvents]);
 
   // If not connected for 5s, switch to demo mode
   useEffect(() => {
@@ -795,6 +1020,11 @@ export default function App() {
       {/* Aggregate stats */}
       <AggregateStats data={data} sessions={sessions} />
 
+      {/* Tmux status */}
+      <div style={{ marginTop: 16 }}>
+        <TmuxPanel tmux={data?.tmux} />
+      </div>
+
       {/* Filter bar */}
       <div style={{ display: "flex", gap: 6, margin: "16px 0" }}>
         {filterButtons.map(f => (
@@ -855,6 +1085,36 @@ export default function App() {
           })}
         </div>
       ) : null}
+
+      {/* Hook event feed */}
+      {hookEvents.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "monospace", marginBottom: 8 }}>
+            Hook Events
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 200, overflowY: "auto" }}>
+            {hookEvents.slice(0, 20).map((ev, i) => {
+              const isError = ev.event === "PostToolUseFailure" || ev.error;
+              const isStop = ev.event === "Stop";
+              const dotColor = isError ? C.red : isStop ? C.green : C.accent;
+              return (
+                <div key={`${ev.timestamp}-${i}`} style={{
+                  display: "flex", alignItems: "center", gap: 8, padding: "6px 10px",
+                  borderRadius: 4, backgroundColor: C.surface, border: `1px solid ${C.border}`,
+                  fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+                }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: dotColor, flexShrink: 0 }} />
+                  <span style={{ color: C.textMuted, flexShrink: 0 }}>{new Date(ev.timestamp).toLocaleTimeString()}</span>
+                  <Badge color={dotColor} bg={isError ? C.redDim : isStop ? C.greenDim : C.accentDim}>{ev.event}</Badge>
+                  {ev.project && <span style={{ color: C.text }}>{ev.project}</span>}
+                  {ev.toolName && <span style={{ color: C.textDim }}>({ev.toolName})</span>}
+                  {ev.error && <span style={{ color: C.red, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.error}</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <div style={{

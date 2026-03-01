@@ -1,0 +1,43 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -c '{hook_event_name: .hook_event_name, session_id: .session_id, cwd: .cwd, stop_reason: .stop_reason}' | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3456/api/hook",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -c '{hook_event_name: .hook_event_name, session_id: .session_id, cwd: .cwd, tool_name: .tool_name, error: (.tool_result // \"unknown error\")}' | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3456/api/hook",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -c '{hook_event_name: .hook_event_name, session_id: .session_id, cwd: .cwd}' | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3456/api/hook",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

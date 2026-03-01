@@ -5,6 +5,7 @@ export function useMonitorSocket() {
   const [connected, setConnected] = useState(false);
   const [pollIntervalMs, setPollIntervalMs] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [hookEvents, setHookEvents] = useState([]);
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
 
@@ -34,6 +35,8 @@ export function useMonitorSocket() {
           if (msg.data.pollIntervalMs) {
             setPollIntervalMs(msg.data.pollIntervalMs);
           }
+        } else if (msg.type === "hook") {
+          setHookEvents((prev) => [msg.data, ...prev].slice(0, 50));
         }
       } catch (err) {
         console.error("[ws] Parse error:", err);
@@ -66,5 +69,5 @@ export function useMonitorSocket() {
     }
   }, []);
 
-  return { state, connected, pollIntervalMs, lastUpdated, requestRefresh };
+  return { state, connected, pollIntervalMs, lastUpdated, requestRefresh, hookEvents };
 }

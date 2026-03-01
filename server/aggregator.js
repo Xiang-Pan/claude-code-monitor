@@ -6,6 +6,8 @@ export class Aggregator {
   constructor() {
     // Map<hostName, hostData>
     this.hosts = new Map();
+    // Map<hostName, tmuxData>
+    this.tmux = new Map();
     this.listeners = new Set();
   }
 
@@ -14,6 +16,14 @@ export class Aggregator {
    */
   update(hostData) {
     this.hosts.set(hostData.host, hostData);
+    this.notify();
+  }
+
+  /**
+   * Update tmux data for a specific host.
+   */
+  updateTmux(tmuxData) {
+    this.tmux.set(tmuxData.host, tmuxData);
     this.notify();
   }
 
@@ -96,9 +106,65 @@ export class Aggregator {
       hosts: hostStatuses,
     };
 
+    // Aggregate tmux data from all hosts
+    const tmuxHosts = [];
+    for (const [name, data] of this.tmux) {
+      tmuxHosts.push({
+        host: name,
+        status: data.status,
+        method: data.method || null,
+        sessions: data.sessions || [],
+        collectedAt: data.collectedAt,
+      });
+    }
+
+    // ── Link tmux panes ↔ Claude sessions by host + cwd ─────
+    // Build a lookup: "host:cwd" → [claude sessions]
+    const cwdIndex = new Map();
+    for (const s of allSessions) {
+      const cwd = s.cwd || s.project?.path;
+      if (!cwd) continue;
+      const key = `${s.host}:${cwd}`;
+      if (!cwdIndex.has(key)) cwdIndex.set(key, []);
+      cwdIndex.get(key).push(s);
+    }
+
+    // Walk every tmux pane — attach linked Claude session info,
+    // and attach tmux pane info back onto the Claude session.
+    for (const th of tmuxHosts) {
+      for (const sess of th.sessions) {
+        for (const win of sess.windows || []) {
+          for (const pane of win.panes || []) {
+            if (!pane.cwd) continue;
+            const key = `${th.host}:${pane.cwd}`;
+            const linked = cwdIndex.get(key);
+            if (!linked || linked.length === 0) continue;
+            // Annotate pane → Claude
+            pane.claudeSessions = linked.map((s) => ({
+              sessionId: s.sessionId,
+              status: s.status,
+              project: s.project?.name,
+            }));
+            // Annotate Claude → tmux (pick first active/idle match)
+            for (const s of linked) {
+              if (!s.tmux) {
+                s.tmux = {
+                  session: sess.name,
+                  window: win.name,
+                  pane: pane.paneId,
+                  attached: sess.attached,
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+
     return {
       sessions: allSessions,
       aggregate,
+      tmux: tmuxHosts,
       updatedAt: Date.now(),
     };
   }

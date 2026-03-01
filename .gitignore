@@ -3,3 +3,4 @@ client/dist/
 config.json
 *.tar.gz
 .DS_Store
+.gradio/
