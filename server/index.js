@@ -87,8 +87,19 @@ async function main() {
   });
 
   // ── Hook endpoint — Claude Code hooks POST here ────────
-  app.use("/api/hook", express.json());
+  const hookRateLimit = { count: 0, resetAt: 0 };
+  app.use("/api/hook", express.json({ limit: "16kb" }));
   app.post("/api/hook", (req, res) => {
+    // Basic rate limiting: max 60 requests per minute
+    const now = Date.now();
+    if (now > hookRateLimit.resetAt) {
+      hookRateLimit.count = 0;
+      hookRateLimit.resetAt = now + 60_000;
+    }
+    if (++hookRateLimit.count > 60) {
+      return res.status(429).json({ error: "Too many hook events" });
+    }
+
     const payload = req.body || {};
     const event = payload.hook_event_name || "unknown";
     const sessionId = payload.session_id || null;

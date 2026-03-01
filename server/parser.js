@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
+import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS } from "./constants.js";
 
 /**
  * Decode a Claude Code project directory name back to a filesystem path.
@@ -163,8 +164,8 @@ export function inferStatus(session) {
   const lastActiveMs = new Date(session.lastTimestamp).getTime();
   const ageMs = Date.now() - lastActiveMs;
 
-  if (ageMs < 60_000) return "active";       // < 1 min
-  if (ageMs < 600_000) return "idle";         // < 10 min
+  if (ageMs < ACTIVE_THRESHOLD_MS) return "active";
+  if (ageMs < IDLE_THRESHOLD_MS) return "idle";
   return "completed";
 }
 
