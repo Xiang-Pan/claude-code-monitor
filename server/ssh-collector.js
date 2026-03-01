@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS } from "./constants.js";
 
 /**
  * Collect session data from a remote host via SSH.
@@ -274,8 +275,8 @@ export function parseRemoteSessions(remoteData) {
 
     let status = "completed";
     if (s.hasError) status = "error";
-    else if (ageMs < 60_000) status = "active";
-    else if (ageMs < 600_000) status = "idle";
+    else if (ageMs < ACTIVE_THRESHOLD_MS) status = "active";
+    else if (ageMs < IDLE_THRESHOLD_MS) status = "idle";
 
     return {
       sessionId: s.sessionId,

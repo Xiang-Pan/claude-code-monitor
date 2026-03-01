@@ -1,8 +1,11 @@
 # ⬡ Claude Code Monitor
 
+[English](README.md) | [中文](README_CN.md)
+
 A real-time dashboard for monitoring multiple Claude Code sessions across SSH hosts. Watch all your sessions at a glance — token usage, status, files changed, and more — without tab-hopping through terminals.
 
-![Dashboard Preview](docs/preview.png)
+<!-- TODO: add a screenshot to docs/preview.png -->
+<!-- ![Dashboard Preview](docs/preview.png) -->
 
 ## Why?
 
@@ -49,7 +52,7 @@ If you run Claude Code across multiple remote machines (via SSH + tmux), keeping
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/YOUR_USER/claude-code-monitor.git
+git clone https://github.com/Xiang-Pan/claude-code-monitor.git
 cd claude-code-monitor
 npm install
 ```
@@ -187,6 +190,7 @@ sshfs user@dev-server:.claude /mnt/claude-dev-server
 | `hosts[].host` | string | — | SSH hostname/IP (ssh mode only) |
 | `hosts[].port` | number | `22` | SSH port (ssh mode only) |
 | `hosts[].identityFile` | string | — | SSH key path (ssh mode only) |
+| `hosts[].sshAlias` | string | — | SSH config alias (used instead of user/host/port) |
 | `server.port` | number | `3456` | HTTP/WebSocket server port |
 | `server.pollIntervalMs` | number | `3000` | How often to check for updates |
 
@@ -236,26 +240,50 @@ git worktree add ../myapp-fix-bug fix/critical-bug
 # Now run separate Claude Code sessions in each directory
 ```
 
+## Hook Integration
+
+You can forward Claude Code hook events (Stop, Notification, tool failures) to the dashboard for real-time alerts. Copy the example hook config into your Claude Code settings:
+
+```bash
+cp hooks.example.json ~/.claude/settings.json
+# or merge it into your existing settings.json
+```
+
+Events are POSTed to `http://localhost:3456/api/hook` and displayed as toast notifications in the dashboard.
+
+## Public Sharing via Gradio Tunnel
+
+Expose your dashboard with a public URL (useful for sharing with teammates or viewing on mobile):
+
+```bash
+npm run share
+# or: uv run share.py
+```
+
+This uses [Gradio's FRP tunnel](https://www.gradio.app/) to create a temporary public URL that tunnels to your local server. Requires `gradio` (`pip install gradio` or use `uv run` which auto-installs).
+
 ## Project Structure
 
 ```
 claude-code-monitor/
 ├── server/
-│   ├── index.js          # Express + WebSocket server
-│   ├── watcher.js        # File system watcher for ~/.claude
-│   ├── parser.js         # JSONL session parser
-│   ├── ssh-collector.js  # Remote host data collection via SSH
-│   └── aggregator.js     # Merges data from all hosts
+│   ├── index.js           # Express + WebSocket server
+│   ├── watcher.js         # File system watcher for ~/.claude
+│   ├── parser.js          # JSONL session parser
+│   ├── ssh-collector.js   # Remote host data collection via SSH
+│   ├── tmux-collector.js  # tmux session status via libtmux/CLI
+│   └── aggregator.js      # Merges data from all hosts
 ├── client/
 │   ├── src/
-│   │   ├── App.jsx       # Main dashboard component
-│   │   ├── components/   # UI components
-│   │   └── hooks/        # WebSocket hook, etc.
+│   │   ├── App.jsx        # Main dashboard UI
+│   │   └── hooks/         # WebSocket hook
 │   ├── index.html
 │   └── vite.config.js
 ├── scripts/
-│   └── quick-status.sh   # CLI status checker (no server needed)
+│   └── quick-status.sh    # CLI status checker (no server needed)
+├── share.py               # Gradio FRP tunnel for public URL
 ├── config.example.json
+├── hooks.example.json     # Claude Code hook config for live alerts
 ├── package.json
 └── README.md
 ```
