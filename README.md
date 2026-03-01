@@ -74,7 +74,7 @@ cp config.example.json config.json
       "name": "gpu-box",
       "mode": "ssh",
       "user": "ubuntu",
-      "host": "192.168.1.50",
+      "host": "your-server-ip",
       "port": 22,
       "claudeDir": "~/.claude",
       "identityFile": "~/.ssh/id_ed25519"
