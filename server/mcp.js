@@ -124,6 +124,63 @@ function sessionsByHost(hostName) {
   return (state.sessions || []).filter((s) => s.host === hostName);
 }
 
+// ── Relative time parser (exported for testing) ─────────────
+export function resolveRelativeTime(input) {
+  if (input === "today") {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  }
+  const match = input.match(/^(\d+)\s*(m|min|h|hr|d|day)s?$/i);
+  if (match) {
+    const n = parseInt(match[1]);
+    const unit = match[2][0].toLowerCase();
+    const ms = unit === "m" ? n * 60_000 : unit === "h" ? n * 3_600_000 : n * 86_400_000;
+    return new Date(Date.now() - ms).toISOString();
+  }
+  return input; // assume ISO string
+}
+
+// ── Time filter helper (exported for testing) ───────────────
+export function filterByTime(sessions, since) {
+  const cutoff = new Date(since).getTime();
+  if (isNaN(cutoff)) return sessions;
+  return sessions.filter((s) => {
+    const created = s.firstTimestamp ? new Date(s.firstTimestamp).getTime() : 0;
+    return created >= cutoff;
+  });
+}
+
+// ── Context window formatting ───────────────────────────────
+function formatTokens(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function formatContextSummary() {
+  const sessions = state.sessions || [];
+  if (sessions.length === 0) return "No sessions found.";
+
+  const lines = [];
+  for (const s of sessions) {
+    const t = s.tokens || {};
+    const proj = s.project?.name || "unknown";
+    const host = s.host || "local";
+    const lastInput = t.lastInput || 0;
+    const totalIn = t.input || 0;
+    const totalOut = t.output || 0;
+    const cacheRead = t.cacheRead || 0;
+    const total = totalIn + totalOut;
+
+    lines.push(`[${s.status}] ${proj} on ${host}`);
+    lines.push(`  Context (last request): ${formatTokens(lastInput)} input tokens`);
+    lines.push(`  Total: ${formatTokens(totalIn)} in + ${formatTokens(totalOut)} out = ${formatTokens(total)} | Cache: ${formatTokens(cacheRead)} read`);
+  }
+
+  return lines.join("\n");
+}
+
 // ── MCP Server ──────────────────────────────────────────────
 async function main() {
   mcpServer = new McpServer({
@@ -186,6 +243,47 @@ async function main() {
         return { content: [{ type: "text", text: `Session ${sessionId} not found.` }], isError: true };
       }
       return { content: [{ type: "text", text: JSON.stringify(session, null, 2) }] };
+    },
+  );
+
+  mcpServer.tool(
+    "get_sessions_since",
+    "Get sessions created since a given time (ISO string or relative like 'today', '1h', '30m')",
+    { since: z.string().describe("ISO datetime, or relative: 'today', '1h', '30m', '7d'") },
+    ({ since }) => {
+      const resolved = resolveRelativeTime(since);
+      const filtered = filterByTime(state.sessions || [], resolved);
+      const lines = [`Sessions since ${since} (${filtered.length} found):`];
+      for (const s of filtered) {
+        const proj = s.project?.name || "unknown";
+        const host = s.host || "local";
+        const created = s.firstTimestamp || "n/a";
+        lines.push(`  [${s.status}] ${proj} on ${host} — created ${created}, ${s.messages || 0} msgs`);
+      }
+      if (filtered.length === 0) lines.push("  None.");
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  mcpServer.tool(
+    "get_context_window",
+    "Get token usage and context window info for all sessions (or one specific session)",
+    { sessionId: z.string().optional().describe("Optional session ID — omit for all sessions") },
+    ({ sessionId }) => {
+      if (sessionId) {
+        const s = (state.sessions || []).find((x) => x.sessionId === sessionId);
+        if (!s) return { content: [{ type: "text", text: `Session ${sessionId} not found.` }], isError: true };
+        const t = s.tokens || {};
+        const text = [
+          `${s.project?.name || "unknown"} on ${s.host || "local"} [${s.status}]`,
+          `Context (last request): ${formatTokens(t.lastInput || 0)} input tokens`,
+          `Total: ${formatTokens(t.input || 0)} in + ${formatTokens(t.output || 0)} out = ${formatTokens((t.input || 0) + (t.output || 0))}`,
+          `Cache read: ${formatTokens(t.cacheRead || 0)}`,
+          `Messages: ${s.messages || 0} | Tool calls: ${s.toolCalls || 0}`,
+        ].join("\n");
+        return { content: [{ type: "text", text }] };
+      }
+      return { content: [{ type: "text", text: formatContextSummary() }] };
     },
   );
 
