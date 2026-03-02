@@ -86,6 +86,74 @@ async function main() {
     res.json({ status: "ok", uptime: process.uptime() });
   });
 
+  // ── Agent client tracking ─────────────────────────────────
+  const clientTokens = config.server?.clientTokens || null; // null = no auth required
+  const clientStaleMs = config.server?.clientStaleMs || 15_000;
+  const agentClients = new Map(); // clientId → { lastSeen, online }
+
+  // Per-client rate limiting: 30 req/min
+  const clientRateLimits = new Map(); // clientId → { count, resetAt }
+
+  app.use("/api/client-update", express.json({ limit: "1mb" }));
+  app.post("/api/client-update", (req, res) => {
+    const { clientId, token, hostData } = req.body || {};
+
+    if (!clientId || !hostData) {
+      return res.status(400).json({ error: "Missing clientId or hostData" });
+    }
+
+    // Token auth (if configured)
+    if (clientTokens && clientTokens.length > 0) {
+      if (!token || !clientTokens.includes(token)) {
+        return res.status(401).json({ error: "Invalid token" });
+      }
+    }
+
+    // Per-client rate limiting: 30 req/min
+    const now = Date.now();
+    let rl = clientRateLimits.get(clientId);
+    if (!rl || now > rl.resetAt) {
+      rl = { count: 0, resetAt: now + 60_000 };
+      clientRateLimits.set(clientId, rl);
+    }
+    if (++rl.count > 30) {
+      return res.status(429).json({ error: "Too many updates" });
+    }
+
+    // Feed into aggregator (same path as local watcher / SSH)
+    aggregator.update(hostData);
+
+    // Track heartbeat
+    agentClients.set(clientId, { lastSeen: now, online: true });
+
+    console.log(`[client] ${clientId}: ${hostData.sessions?.length || 0} session(s)`);
+    res.json({ ok: true });
+  });
+
+  // Mark stale clients periodically
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, info] of agentClients) {
+      if (info.online && now - info.lastSeen > clientStaleMs) {
+        info.online = false;
+        console.log(`[client] ${id} went offline (no heartbeat for ${clientStaleMs}ms)`);
+      }
+    }
+  }, 5_000);
+
+  app.get("/api/clients", (req, res) => {
+    const clients = [];
+    for (const [id, info] of agentClients) {
+      clients.push({
+        clientId: id,
+        online: info.online,
+        lastSeen: info.lastSeen,
+        staleSince: info.online ? null : info.lastSeen,
+      });
+    }
+    res.json({ clients });
+  });
+
   // ── Hook endpoint — Claude Code hooks POST here ────────
   const hookRateLimit = { count: 0, resetAt: 0 };
   app.use("/api/hook", express.json({ limit: "16kb" }));

@@ -1,0 +1,17 @@
+{
+  "name": "claude-code-monitor-agent",
+  "version": "0.1.0",
+  "description": "Lightweight agent that watches local Claude Code sessions and pushes updates to a central monitor server",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "claude-code-monitor-agent": "./index.js"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

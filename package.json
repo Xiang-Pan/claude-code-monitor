@@ -5,7 +5,8 @@
   "type": "module",
   "main": "server/index.js",
   "bin": {
-    "claude-code-monitor": "./server/index.js"
+    "claude-code-monitor": "./server/index.js",
+    "claude-code-monitor-agent": "./agent/index.js"
   },
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
@@ -50,6 +51,7 @@
   },
   "files": [
     "server/",
+    "agent/",
     "client/dist/",
     "scripts/",
     "config.example.json",
