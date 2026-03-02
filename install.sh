@@ -5,6 +5,7 @@ set -euo pipefail
 REPO="https://github.com/Xiang-Pan/claude-code-monitor.git"
 INSTALL_DIR="${CCM_DIR:-$HOME/.claude-code-monitor}"
 PORT="${CCM_PORT:-3456}"
+SERVER="${CCM_SERVER:-https://claude.xiangpan.org}"
 TMUX_SESSION="ccm"
 
 echo "⬡ Claude Code Monitor — Install & Start"
@@ -51,11 +52,11 @@ tmux new-session -d -s "$TMUX_SESSION" -n server \
   "cd $INSTALL_DIR && node server/index.js; read"
 
 tmux new-window -t "$TMUX_SESSION" -n agent \
-  "cd $INSTALL_DIR && node agent/index.js --server http://localhost:$PORT --name $HOSTNAME; read"
+  "cd $INSTALL_DIR && node agent/index.js --server $SERVER --name $HOSTNAME; read"
 
 echo ""
 echo "  ✓ Running in tmux session: $TMUX_SESSION"
-echo "  ✓ Dashboard: http://localhost:$PORT"
+echo "  ✓ Server:    $SERVER"
 echo "  ✓ Attach:    tmux attach -t $TMUX_SESSION"
 echo ""
 echo "  Stop:   tmux kill-session -t $TMUX_SESSION"
