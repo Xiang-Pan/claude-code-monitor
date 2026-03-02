@@ -94,6 +94,11 @@ export default function App() {
             body: `${s.project?.name || s.sessionId?.slice(0, 8)} on ${s.host} finished`,
             icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✅</text></svg>",
           });
+        } else if (s.status === "idle" && oldStatus === "active") {
+          new Notification("Waiting for input", {
+            body: `${s.project?.name || s.sessionId?.slice(0, 8)} on ${s.host} may need attention`,
+            icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏳</text></svg>",
+          });
         }
       }
     }
@@ -113,7 +118,13 @@ export default function App() {
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
 
     const name = latest.project || "Claude Code";
-    if (latest.event === "Stop" || latest.event === "PostToolUseFailure") {
+    if (latest.event === "Stop" && latest.stopReason === "end_turn") {
+      new Notification("Waiting for input", {
+        body: `${name} finished — your turn`,
+        tag: eventKey,
+        icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏳</text></svg>",
+      });
+    } else if (latest.event === "Stop" || latest.event === "PostToolUseFailure") {
       new Notification(`Hook: ${latest.event}`, {
         body: `${name}${latest.error ? ` — ${latest.error}` : latest.toolName ? ` (${latest.toolName})` : ""}`,
         tag: eventKey,
