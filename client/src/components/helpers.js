@@ -24,16 +24,33 @@ export function timeAgo(ts) {
 }
 
 const MODEL_PRICING = {
+  // Anthropic
   "opus":   { input: 15, output: 75, cacheRead: 1.5 },
   "sonnet": { input: 3, output: 15, cacheRead: 0.3 },
   "haiku":  { input: 0.8, output: 4, cacheRead: 0.08 },
+  // OpenAI
+  "gpt-4o":    { input: 2.5, output: 10, cacheRead: 1.25 },
+  "o3":        { input: 10, output: 40, cacheRead: 2.5 },
+  "o4-mini":   { input: 1.1, output: 4.4, cacheRead: 0.275 },
+  "gpt-4.1":   { input: 2, output: 8, cacheRead: 0.5 },
+  "gpt-4.1-mini": { input: 0.4, output: 1.6, cacheRead: 0.1 },
+  "gpt-4.1-nano": { input: 0.1, output: 0.4, cacheRead: 0.025 },
 };
 
 export function getModelTier(model) {
   if (!model) return "sonnet";
   const m = model.toLowerCase();
+  // Anthropic models
   if (m.includes("opus")) return "opus";
   if (m.includes("haiku")) return "haiku";
+  if (m.includes("sonnet")) return "sonnet";
+  // OpenAI models — match exact pricing keys
+  if (m.includes("o3")) return "o3";
+  if (m.includes("o4-mini")) return "o4-mini";
+  if (m.includes("gpt-4.1-nano")) return "gpt-4.1-nano";
+  if (m.includes("gpt-4.1-mini")) return "gpt-4.1-mini";
+  if (m.includes("gpt-4.1")) return "gpt-4.1";
+  if (m.includes("gpt-4o")) return "gpt-4o";
   return "sonnet";
 }
 

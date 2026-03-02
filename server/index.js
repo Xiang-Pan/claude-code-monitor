@@ -9,6 +9,7 @@ import http from "http";
 
 import { Aggregator } from "./aggregator.js";
 import { createWatcher } from "./watcher.js";
+import { createCodexWatcher } from "./codex-watcher.js";
 import { collectFromSSH, parseRemoteSessions } from "./ssh-collector.js";
 import { collectTmuxLocal, collectTmuxSSH } from "./tmux-collector.js";
 
@@ -223,8 +224,28 @@ async function main() {
       sshHosts.push(hostConfig);
       const target = hostConfig.sshAlias || `${hostConfig.user}@${hostConfig.host}`;
       console.log(`[ssh] Will poll ${hostConfig.name} (${target})`);
+    } else if (hostConfig.tool === "codex") {
+      // Local Codex mode
+      const codexDir = expandHome(hostConfig.codexDir || "~/.codex");
+      if (fs.existsSync(codexDir)) {
+        console.log(`[local] Watching Codex ${codexDir} as "${hostConfig.name}"`);
+        const watcher = createCodexWatcher(codexDir, hostConfig.name, (data) => {
+          aggregator.update(data);
+        });
+        watchers.push(watcher);
+      } else {
+        console.warn(`[local] ${codexDir} does not exist, skipping "${hostConfig.name}"`);
+        aggregator.update({
+          host: hostConfig.name,
+          status: "error",
+          error: `${codexDir} not found`,
+          sessions: [],
+          statsCache: null,
+          collectedAt: Date.now(),
+        });
+      }
     } else {
-      // Local mode
+      // Local Claude mode (default)
       const claudeDir = expandHome(hostConfig.claudeDir || "~/.claude");
       if (fs.existsSync(claudeDir)) {
         console.log(`[local] Watching ${claudeDir} as "${hostConfig.name}"`);

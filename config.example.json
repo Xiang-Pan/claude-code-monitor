@@ -13,6 +13,12 @@
       "port": 22,
       "claudeDir": "~/.claude",
       "identityFile": "~/.ssh/id_ed25519"
+    },
+    {
+      "name": "codex-machine",
+      "mode": "local",
+      "tool": "codex",
+      "codexDir": "~/.codex"
     }
   ],
   "server": {

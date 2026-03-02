@@ -3,6 +3,7 @@
 import path from "path";
 import { fileURLToPath } from "url";
 import { createWatcher } from "../server/watcher.js";
+import { createCodexWatcher } from "../server/codex-watcher.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -13,7 +14,9 @@ function parseArgs(argv) {
     server: null,
     name: null,
     token: null,
+    tool: "claude",
     claudeDir: path.join(process.env.HOME || "/root", ".claude"),
+    codexDir: path.join(process.env.HOME || "/root", ".codex"),
     interval: 5000,
   };
 
@@ -31,8 +34,14 @@ function parseArgs(argv) {
       case "-t":
         opts.token = args[++i];
         break;
+      case "--tool":
+        opts.tool = args[++i];
+        break;
       case "--claude-dir":
         opts.claudeDir = args[++i];
+        break;
+      case "--codex-dir":
+        opts.codexDir = args[++i];
         break;
       case "--interval":
         opts.interval = parseInt(args[++i], 10);
@@ -44,11 +53,17 @@ function parseArgs(argv) {
     }
   }
 
-  // Expand ~ in claudeDir
+  // Expand ~ in paths
   if (opts.claudeDir.startsWith("~/")) {
     opts.claudeDir = path.join(
       process.env.HOME || "/root",
       opts.claudeDir.slice(2)
+    );
+  }
+  if (opts.codexDir.startsWith("~/")) {
+    opts.codexDir = path.join(
+      process.env.HOME || "/root",
+      opts.codexDir.slice(2)
     );
   }
 
@@ -63,13 +78,16 @@ function printUsage() {
     --server, -s <url>     Server URL (required), e.g. http://server:3456
     --name, -n <name>      Client name / host identifier (required)
     --token, -t <token>    Authentication token (optional)
+    --tool <name>          Tool to monitor: "claude" or "codex" (default: claude)
     --claude-dir <path>    Path to ~/.claude directory (default: ~/.claude)
+    --codex-dir <path>     Path to ~/.codex directory (default: ~/.codex)
     --interval <ms>        Minimum push interval in ms (default: 5000)
     --help, -h             Show this help message
 
   Examples:
     node agent/index.js --server http://localhost:3456 --name my-machine
     node agent/index.js -s http://10.0.0.5:3456 -n gpu-box -t mysecret
+    node agent/index.js -s http://localhost:3456 -n my-box --tool codex
   `);
 }
 
@@ -92,12 +110,15 @@ async function main() {
   const serverUrl = opts.server.replace(/\/+$/, "");
   const endpoint = `${serverUrl}/api/client-update`;
 
+  const watchDir = opts.tool === "codex" ? opts.codexDir : opts.claudeDir;
+
   console.log(`
   Claude Code Monitor Agent
   ─────────────────────────
   Name:       ${opts.name}
+  Tool:       ${opts.tool}
   Server:     ${serverUrl}
-  Claude dir: ${opts.claudeDir}
+  Watch dir:  ${watchDir}
   Interval:   ${opts.interval}ms
   Auth:       ${opts.token ? "yes" : "no"}
   `);
@@ -159,8 +180,9 @@ async function main() {
   // Track last known state for heartbeat
   let lastHostData = null;
 
-  // Start the file watcher (reuses server/watcher.js)
-  const watcher = createWatcher(opts.claudeDir, opts.name, (hostData) => {
+  // Start the file watcher
+  const createWatcherFn = opts.tool === "codex" ? createCodexWatcher : createWatcher;
+  const watcher = createWatcherFn(watchDir, opts.name, (hostData) => {
     lastHostData = hostData;
     const sessionCount = hostData.sessions?.length || 0;
     console.log(
@@ -169,7 +191,7 @@ async function main() {
     schedulePush(hostData);
   });
 
-  console.log(`[agent] Watching ${opts.claudeDir}, pushing to ${endpoint}`);
+  console.log(`[agent] Watching ${watchDir}, pushing to ${endpoint}`);
 
   // Periodic heartbeat: re-push last known data to keep "online" status.
   // Fires every interval; only actually pushes if no recent push occurred.
