@@ -115,6 +115,14 @@ If you just want to monitor Claude Code on the current machine:
 npx claude-code-monitor
 ```
 
+### Connect a remote machine to an existing server
+
+To push session data from a remote machine to your central dashboard:
+
+```bash
+git clone https://github.com/Xiang-Pan/claude-code-monitor.git /tmp/ccm && cd /tmp/ccm && npm install && node agent/index.js --server http://YOUR_SERVER:3456 --name $(hostname)
+```
+
 ## How It Works
 
 ### Data Source: `~/.claude/`
