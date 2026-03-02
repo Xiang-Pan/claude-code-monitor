@@ -29,7 +29,7 @@ export async function parseCodexSessionFile(filepath) {
 
   // Extract session ID from filename: rollout-<uuid>.jsonl → <uuid>
   const basename = path.basename(filepath, ".jsonl");
-  const sessionId = basename.startsWith("rollout-")
+  let sessionId = basename.startsWith("rollout-")
     ? basename.slice("rollout-".length)
     : basename;
 
@@ -112,7 +112,9 @@ export async function parseCodexSessionFile(filepath) {
           break;
 
         case "ContextCompacted":
-          hasSummary = true;
+          // Note: unlike Claude's "summary", Codex context compaction is a
+          // mid-session event (memory management) and does NOT indicate the
+          // session is finished, so we intentionally don't set hasSummary.
           break;
       }
 

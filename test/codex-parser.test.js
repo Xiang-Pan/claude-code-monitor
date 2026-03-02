@@ -96,13 +96,13 @@ describe("parseCodexSessionFile", () => {
     expect(result.hasError).toBe(true);
   });
 
-  it("detects ContextCompacted as hasSummary", async () => {
+  it("does not treat ContextCompacted as session completion", async () => {
     const filepath = writeRollout([
       { type: "session_meta", meta: { cwd: "/tmp" }, ts: "2026-03-01T10:00:00Z" },
       { type: "event_msg", payload: { type: "ContextCompacted" }, ts: "2026-03-01T10:00:01Z" },
     ]);
     const result = await parseCodexSessionFile(filepath);
-    expect(result.hasSummary).toBe(true);
+    expect(result.hasSummary).toBe(false);
   });
 
   it("extracts model from turn_context", async () => {
