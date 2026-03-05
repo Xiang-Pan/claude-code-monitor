@@ -34,21 +34,31 @@ function playNotificationSound() {
 // ─── Voice notification (Edge TTS via server, queued) ─────
 const _ttsQueue = [];
 let _ttsPlaying = false;
+let _ttsCurrentAudio = null;
 function speakNotification(text) {
+  if (_ttsQueue.length >= 10) _ttsQueue.shift(); // cap queue
   _ttsQueue.push(text);
   if (!_ttsPlaying) _ttsPlayNext();
 }
 function _ttsPlayNext() {
-  if (_ttsQueue.length === 0) { _ttsPlaying = false; return; }
+  if (_ttsQueue.length === 0) { _ttsPlaying = false; _ttsCurrentAudio = null; return; }
   _ttsPlaying = true;
   const text = _ttsQueue.shift();
   try {
     const audio = new Audio(`/api/tts?text=${encodeURIComponent(text.slice(0, 200))}`);
     audio.volume = 0.8;
-    audio.onended = _ttsPlayNext;
-    audio.onerror = _ttsPlayNext;
-    audio.play().catch(_ttsPlayNext);
+    _ttsCurrentAudio = audio;
+    let done = false;
+    const next = () => { if (!done) { done = true; _ttsPlayNext(); } };
+    audio.onended = next;
+    audio.onerror = next;
+    audio.play().catch(next);
   } catch { _ttsPlayNext(); }
+}
+function stopTts() {
+  _ttsQueue.length = 0;
+  if (_ttsCurrentAudio) { _ttsCurrentAudio.pause(); _ttsCurrentAudio = null; }
+  _ttsPlaying = false;
 }
 
 // ─── Toast component ───────────────────────────────────────
@@ -456,7 +466,9 @@ function Dashboard() {
                       color: checked ? C.accent : C.textMuted, borderRadius: 4,
                     }}>
                       <input type="checkbox" checked={checked} onChange={() => {
-                        setVoiceTypes(checked ? voiceTypes.filter(t => t !== opt.key) : [...voiceTypes, opt.key]);
+                        const next = checked ? voiceTypes.filter(t => t !== opt.key) : [...voiceTypes, opt.key];
+                        setVoiceTypes(next);
+                        if (next.length === 0) stopTts();
                       }} style={{ accentColor: C.accent }} />
                       {opt.label}
                     </label>
