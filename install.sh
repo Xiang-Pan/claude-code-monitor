@@ -19,6 +19,56 @@ echo "⬡ Claude Code Monitor — Install & Start"
 echo "─────────────────────────────────────────"
 echo "  Mode: $MODE"
 
+# 0. Check required tools
+if ! command -v git &>/dev/null; then
+  echo "Error: git is required but not found."
+  echo "  Install it with your package manager, e.g.:"
+  echo "    apt install git   (Debian/Ubuntu)"
+  echo "    yum install git   (RHEL/CentOS)"
+  echo "    brew install git  (macOS)"
+  exit 1
+fi
+
+if ! command -v tmux &>/dev/null; then
+  echo "Error: tmux is required but not found."
+  echo "  Install it with your package manager, e.g.:"
+  echo "    apt install tmux   (Debian/Ubuntu)"
+  echo "    yum install tmux   (RHEL/CentOS)"
+  echo "    brew install tmux  (macOS)"
+  exit 1
+fi
+
+if ! command -v curl &>/dev/null; then
+  echo "Error: curl is required but not found."
+  echo "  Install it with your package manager, e.g.:"
+  echo "    apt install curl   (Debian/Ubuntu)"
+  echo "    yum install curl   (RHEL/CentOS)"
+  echo "    brew install curl  (macOS)"
+  exit 1
+fi
+
+# Detect JS runtime: prefer bun, then node; auto-install bun if neither found
+if command -v bun &>/dev/null; then
+  RUNTIME="bun"
+elif command -v node &>/dev/null; then
+  RUNTIME="node"
+else
+  echo "  No JS runtime found. Installing bun..."
+  curl -fsSL https://bun.sh/install | bash || true
+  # Source bun into current session
+  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+  export PATH="$BUN_INSTALL/bin:$PATH"
+  if ! command -v bun &>/dev/null; then
+    echo "Error: bun installation failed."
+    echo "  Try installing manually: https://bun.sh"
+    exit 1
+  fi
+  RUNTIME="bun"
+  echo "  ✓ bun installed"
+fi
+
+echo "  Runtime: $RUNTIME"
+
 # 1. Clone or update
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "[1/3] Updating existing install at $INSTALL_DIR..."
@@ -32,24 +82,20 @@ cd "$INSTALL_DIR"
 
 # 2. Install deps
 echo "[2/3] Installing dependencies..."
-if command -v bun &>/dev/null; then
+if [ "$RUNTIME" = "bun" ]; then
   bun install --frozen-lockfile 2>/dev/null || bun install
-elif command -v npm &>/dev/null; then
-  npm install
-elif command -v node &>/dev/null; then
-  # Node exists but no package manager — install deps manually via npx or corepack
-  if command -v npx &>/dev/null; then
+else
+  if command -v npm &>/dev/null; then
+    npm install
+  elif command -v npx &>/dev/null; then
     npx --yes npm install
   elif command -v corepack &>/dev/null; then
     corepack enable && npm install
   else
-    echo "Warning: no npm/bun/npx found. Trying node directly..."
-    echo "  If this fails, install Node.js 20+ with npm: https://nodejs.org"
+    echo "Error: node found but no package manager (npm/npx/corepack)."
+    echo "  Install Node.js 20+ with npm: https://nodejs.org"
     exit 1
   fi
-else
-  echo "Error: node is required. Install Node.js 20+: https://nodejs.org"
-  exit 1
 fi
 
 # 3. Start in tmux
@@ -58,26 +104,32 @@ tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 
 HOSTNAME=$(hostname -s 2>/dev/null || hostname)
 
+# Build PATH export for tmux commands (ensures bun is available inside tmux)
+TMUX_ENV=""
+if [ "$RUNTIME" = "bun" ]; then
+  TMUX_ENV="export PATH=\"${BUN_INSTALL:-$HOME/.bun}/bin:\$PATH\"; "
+fi
+
 if [ "$MODE" = "server" ]; then
   # Build client for dashboard
   echo "  Building dashboard..."
-  if command -v bun &>/dev/null; then
+  if [ "$RUNTIME" = "bun" ]; then
     bun run build
   else
     npx --yes vite build 2>/dev/null || (cd client && npx --yes vite build)
   fi
 
   tmux new-session -d -s "$TMUX_SESSION" -n server \
-    "cd $INSTALL_DIR && node server/index.js; read"
+    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME server/index.js; read"
   tmux new-window -t "$TMUX_SESSION" -n agent \
-    "cd $INSTALL_DIR && node agent/index.js --server http://localhost:$PORT --name $HOSTNAME; read"
+    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME agent/index.js --server \"http://localhost:$PORT\" --name \"$HOSTNAME\"; read"
 
   echo ""
   echo "  ✓ Dashboard: http://localhost:$PORT"
 else
   # Agent-only: just push data to remote server
   tmux new-session -d -s "$TMUX_SESSION" -n agent \
-    "cd $INSTALL_DIR && node agent/index.js --server $SERVER --name $HOSTNAME; read"
+    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME agent/index.js --server \"$SERVER\" --name \"$HOSTNAME\"; read"
 
   echo ""
   echo "  ✓ Pushing to: $SERVER"
