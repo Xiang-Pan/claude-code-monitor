@@ -2,7 +2,9 @@
 
 import fs from "fs";
 import path from "path";
+import os from "os";
 import crypto from "crypto";
+import { execFile } from "child_process";
 import { fileURLToPath } from "url";
 import express from "express";
 import { WebSocketServer } from "ws";
@@ -307,6 +309,26 @@ document.getElementById("form").onsubmit = async (e) => {
     }
 
     res.json({ ok: true });
+  });
+
+  // ── TTS endpoint — Edge TTS via CLI ─────────────────────
+  app.get("/api/tts", (req, res) => {
+    const text = (req.query.text || "").slice(0, 200);
+    if (!text) return res.status(400).json({ error: "text required" });
+    const voice = req.query.voice || "zh-CN-XiaoxiaoNeural";
+    const tmpFile = path.join(os.tmpdir(), `tts-${Date.now()}.mp3`);
+    execFile("edge-tts", ["--text", text, "--voice", voice, "--write-media", tmpFile], { timeout: 10000 }, (err) => {
+      if (err) {
+        console.error("[tts] edge-tts error:", err.message);
+        return res.status(500).json({ error: "TTS failed" });
+      }
+      res.setHeader("Content-Type", "audio/mpeg");
+      res.setHeader("Cache-Control", "public, max-age=60");
+      const stream = fs.createReadStream(tmpFile);
+      stream.pipe(res);
+      stream.on("end", () => fs.unlink(tmpFile, () => {}));
+      stream.on("error", () => { fs.unlink(tmpFile, () => {}); res.end(); });
+    });
   });
 
   // Serve the built client (production) or proxy to Vite (dev)

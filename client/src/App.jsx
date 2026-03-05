@@ -29,6 +29,18 @@ function playNotificationSound() {
   } catch {}
 }
 
+// ─── Voice notification (Edge TTS via server) ────────────
+let _ttsAudio = null;
+function speakNotification(text) {
+  try {
+    if (_ttsAudio) { _ttsAudio.pause(); _ttsAudio = null; }
+    const url = `/api/tts?text=${encodeURIComponent(text.slice(0, 200))}`;
+    _ttsAudio = new Audio(url);
+    _ttsAudio.volume = 0.8;
+    _ttsAudio.play().catch(() => {});
+  } catch {}
+}
+
 // ─── Toast component ───────────────────────────────────────
 function ToastContainer({ toasts, onDismiss }) {
   return (
@@ -185,6 +197,7 @@ function Dashboard() {
   const [hookTimeFilter, setHookTimeFilter] = usePersistedState("hookTimeFilter", "all");
   const [hookProjectFilter, setHookProjectFilter] = usePersistedState("hookProjectFilter", "all");
   const [hookPanelOpen, setHookPanelOpen] = usePersistedState("hookPanelOpen", true);
+  const [voiceEnabled, setVoiceEnabled] = usePersistedState("voiceEnabled", false);
   const [demoMode, setDemoMode] = useState(false);
   const [demoData, setDemoData] = useState(null);
   const [tick, setTick] = useState(0);
@@ -225,6 +238,7 @@ function Dashboard() {
         if (n) {
           addToast(n.title, n.body, s.status === "error" ? "#3b1a1a" : undefined);
           playNotificationSound();
+          if (voiceEnabled) speakNotification(`${n.title}. ${n.body}`);
           if (typeof Notification !== "undefined" && Notification.permission === "granted") {
             new Notification(n.title, { body: n.body, icon: n.icon });
           }
@@ -251,12 +265,14 @@ function Dashboard() {
       addToast(n.title, n.body, isError ? "#3b1a1a" : undefined);
       // Sound
       playNotificationSound();
+      // Voice
+      if (voiceEnabled) speakNotification(`${n.title}. ${n.body}`);
       // Desktop notification (if permitted)
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         new Notification(n.title, { body: n.body, tag: n.tag, icon: n.icon });
       }
     }
-  }, [hookEvents, addToast]);
+  }, [hookEvents, addToast, voiceEnabled]);
 
   // If not connected for 5s, switch to demo mode
   useEffect(() => {
@@ -387,6 +403,17 @@ function Dashboard() {
               transition: "all 0.15s",
             }}>≡ Table</button>
           </div>
+
+          <button
+            onClick={() => setVoiceEnabled(!voiceEnabled)}
+            title={voiceEnabled ? "Voice notifications ON" : "Voice notifications OFF"}
+            style={{
+              padding: "5px 10px", borderRadius: 6, border: `1px solid ${voiceEnabled ? C.accent + "40" : C.border}`,
+              backgroundColor: voiceEnabled ? C.accentDim : "transparent",
+              color: voiceEnabled ? C.accent : C.textMuted,
+              fontSize: 11, fontFamily: "monospace", cursor: "pointer", transition: "all 0.15s",
+            }}
+          >{voiceEnabled ? "Voice ON" : "Voice OFF"}</button>
 
           {demoMode && (
             <Badge color={C.amber} bg={C.amberDim}>DEMO MODE</Badge>
