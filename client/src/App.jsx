@@ -31,16 +31,24 @@ function playNotificationSound() {
   } catch {}
 }
 
-// ─── Voice notification (Edge TTS via server) ────────────
-let _ttsAudio = null;
+// ─── Voice notification (Edge TTS via server, queued) ─────
+const _ttsQueue = [];
+let _ttsPlaying = false;
 function speakNotification(text) {
+  _ttsQueue.push(text);
+  if (!_ttsPlaying) _ttsPlayNext();
+}
+function _ttsPlayNext() {
+  if (_ttsQueue.length === 0) { _ttsPlaying = false; return; }
+  _ttsPlaying = true;
+  const text = _ttsQueue.shift();
   try {
-    if (_ttsAudio) { _ttsAudio.pause(); _ttsAudio = null; }
-    const url = `/api/tts?text=${encodeURIComponent(text.slice(0, 200))}`;
-    _ttsAudio = new Audio(url);
-    _ttsAudio.volume = 0.8;
-    _ttsAudio.play().catch(() => {});
-  } catch {}
+    const audio = new Audio(`/api/tts?text=${encodeURIComponent(text.slice(0, 200))}`);
+    audio.volume = 0.8;
+    audio.onended = _ttsPlayNext;
+    audio.onerror = _ttsPlayNext;
+    audio.play().catch(_ttsPlayNext);
+  } catch { _ttsPlayNext(); }
 }
 
 // ─── Toast component ───────────────────────────────────────
@@ -267,14 +275,12 @@ function Dashboard() {
       addToast(n.title, n.body, isError ? "#3b1a1a" : undefined);
       // Sound
       playNotificationSound();
-      // Voice
-      if (voiceEnabled) speakNotification(`${n.title}. ${n.body}`);
       // Desktop notification (if permitted)
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         new Notification(n.title, { body: n.body, tag: n.tag, icon: n.icon });
       }
     }
-  }, [hookEvents, addToast, voiceEnabled]);
+  }, [hookEvents, addToast]);
 
   // If not connected for 5s, switch to demo mode
   useEffect(() => {
