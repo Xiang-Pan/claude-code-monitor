@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { decodeProjectPath, extractProjectName, inferStatus } from "../server/parser.js";
-import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS } from "../server/constants.js";
+import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS, STUCK_THRESHOLD_MS } from "../server/constants.js";
 
 describe("decodeProjectPath", () => {
   it("decodes leading dash as root /", () => {
@@ -52,5 +52,17 @@ describe("inferStatus", () => {
   it("returns completed when last message is old", () => {
     const ts = new Date(Date.now() - IDLE_THRESHOLD_MS * 2).toISOString();
     expect(inferStatus({ lastTimestamp: ts })).toBe("completed");
+  });
+
+  it("returns stuck when active but assistant is stale", () => {
+    const recentTs = new Date(Date.now() - ACTIVE_THRESHOLD_MS / 2).toISOString();
+    const staleAssistantTs = new Date(Date.now() - STUCK_THRESHOLD_MS - 1000).toISOString();
+    expect(inferStatus({ lastTimestamp: recentTs, lastAssistantTimestamp: staleAssistantTs })).toBe("stuck");
+  });
+
+  it("returns active when active and assistant is recent", () => {
+    const recentTs = new Date(Date.now() - ACTIVE_THRESHOLD_MS / 2).toISOString();
+    const recentAssistantTs = new Date(Date.now() - STUCK_THRESHOLD_MS / 2).toISOString();
+    expect(inferStatus({ lastTimestamp: recentTs, lastAssistantTimestamp: recentAssistantTs })).toBe("active");
   });
 });

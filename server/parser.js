@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
-import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS } from "./constants.js";
+import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS, STUCK_THRESHOLD_MS } from "./constants.js";
 
 /**
  * Decode a Claude Code project directory name back to a filesystem path.
@@ -55,6 +55,7 @@ export async function parseSessionFile(filepath) {
   let lastTimestamp = null;
   let lastUserMessage = "";
   let lastAssistantMessage = "";
+  let lastAssistantTimestamp = null;
   let hasError = false;
   let hasSummary = false;
   let model = null;
@@ -80,6 +81,7 @@ export async function parseSessionFile(filepath) {
 
       case "assistant":
         assistantMessages++;
+        if (ts) lastAssistantTimestamp = ts;
         if (entry.message?.content) {
           const content = entry.message.content;
           if (Array.isArray(content)) {
@@ -148,6 +150,7 @@ export async function parseSessionFile(filepath) {
     lastTimestamp,
     lastUserMessage: truncate(lastUserMessage, 200),
     lastAssistantMessage: truncate(lastAssistantMessage, 200),
+    lastAssistantTimestamp,
     hasError,
     hasSummary,
     model,
@@ -168,7 +171,14 @@ export function inferStatus(session) {
   const lastActiveMs = new Date(session.lastTimestamp).getTime();
   const ageMs = Date.now() - lastActiveMs;
 
-  if (ageMs < ACTIVE_THRESHOLD_MS) return "active";
+  if (ageMs < ACTIVE_THRESHOLD_MS) {
+    // Session file is being updated, but check if assistant has gone silent
+    if (session.lastAssistantTimestamp) {
+      const assistantAgeMs = Date.now() - new Date(session.lastAssistantTimestamp).getTime();
+      if (assistantAgeMs > STUCK_THRESHOLD_MS) return "stuck";
+    }
+    return "active";
+  }
   if (ageMs < IDLE_THRESHOLD_MS) return "idle";
   return "completed";
 }
