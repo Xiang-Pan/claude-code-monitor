@@ -1,3 +1,5 @@
+import { C } from "./theme.js";
+
 export function formatDuration(ms) {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -67,6 +69,38 @@ export function estimateCost(model, tokens) {
 export function formatCost(cost) {
   if (cost < 0.01) return "<$0.01";
   return `$${cost.toFixed(2)}`;
+}
+
+// ─── Context window helpers ─────────────────────────────────
+
+const MODEL_CONTEXT_WINDOW = {
+  opus: 200_000,
+  sonnet: 200_000,
+  haiku: 200_000,
+  "gpt-4o": 128_000,
+  o3: 200_000,
+  "o4-mini": 200_000,
+  "gpt-4.1": 1_000_000,
+  "gpt-4.1-mini": 1_000_000,
+  "gpt-4.1-nano": 1_000_000,
+};
+
+export function getContextWindowMax(model) {
+  const tier = getModelTier(model);
+  return MODEL_CONTEXT_WINDOW[tier] || 200_000;
+}
+
+export function contextPercent(lastInputTokens, model) {
+  if (!lastInputTokens) return null;
+  const max = getContextWindowMax(model);
+  return Math.min(100, (lastInputTokens / max) * 100);
+}
+
+export function contextColor(pct) {
+  if (pct == null) return C.textDim;
+  if (pct > 80) return C.red;
+  if (pct >= 50) return C.amber;
+  return C.green;
 }
 
 export function groupSessions(sessions) {

@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useMonitorSocket } from "./hooks/useMonitorSocket.js";
 import { usePersistedState } from "./hooks/usePersistedState.js";
 import { C } from "./components/theme.js";
-import { groupSessions, estimateCost } from "./components/helpers.js";
+import { groupSessions, estimateCost, timeAgo } from "./components/helpers.js";
 import { Badge } from "./components/Badge.jsx";
 import { CountdownTimer } from "./components/CountdownTimer.jsx";
 import { SessionCard } from "./components/SessionCard.jsx";
@@ -10,6 +10,44 @@ import { SessionTable } from "./components/SessionTable.jsx";
 import { AggregateStats } from "./components/AggregateStats.jsx";
 import { HostStatus } from "./components/HostStatus.jsx";
 import { TmuxPanel } from "./components/TmuxPanel.jsx";
+import { getStatusNotification, getHookNotification } from "./notifications.js";
+
+// ─── Notification sound (short beep via Web Audio API) ─────
+function playNotificationSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    osc.type = "sine";
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.3);
+  } catch {}
+}
+
+// ─── Toast component ───────────────────────────────────────
+function ToastContainer({ toasts, onDismiss }) {
+  return (
+    <div style={{ position: "fixed", top: 16, right: 16, zIndex: 9999, display: "flex", flexDirection: "column", gap: 8, maxWidth: 360 }}>
+      {toasts.map((t) => (
+        <div key={t.id} onClick={() => onDismiss(t.id)} style={{
+          padding: "12px 16px", borderRadius: 8,
+          backgroundColor: t.color || "#1e3a5f", border: "1px solid #60a5fa",
+          color: "#e2e5eb", fontFamily: "'JetBrains Mono', monospace", fontSize: 12,
+          cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+          animation: "fadeIn 0.3s ease-out",
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.title}</div>
+          <div style={{ color: "#9ca3af" }}>{t.body}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ─── Demo data for when server isn't connected ──────────────
 function generateDemoSessions() {
@@ -40,6 +78,7 @@ function generateDemoSessions() {
       input: Math.floor(Math.random() * 600000) + 50000,
       output: Math.floor(Math.random() * 150000) + 10000,
       cacheRead: Math.floor(Math.random() * 2000000) + 100000,
+      lastInput: Math.floor(Math.random() * 180000) + 20000,
     },
     firstTimestamp: new Date(Date.now() - Math.floor(Math.random() * 7200000) - 600000).toISOString(),
     lastTimestamp: item.status === "active"
@@ -50,19 +89,117 @@ function generateDemoSessions() {
   }));
 }
 
+// ─── Login Screen ────────────────────────────────────────────
+function LoginScreen() {
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      });
+      if (res.ok) {
+        window.location.reload();
+      } else {
+        setError("Wrong password");
+      }
+    } catch {
+      setError("Connection error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", backgroundColor: C.bg, display: "flex", justifyContent: "center", alignItems: "center" }}>
+      <div style={{
+        backgroundColor: C.surface, border: `1px solid ${C.border}`, borderRadius: 12,
+        padding: 40, width: 360, textAlign: "center",
+      }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#e2e5eb", fontFamily: "'JetBrains Mono', monospace", marginBottom: 8 }}>
+          <span style={{ color: C.accent }}>⬡</span> Claude Code Monitor
+        </h1>
+        <p style={{ fontSize: 12, color: C.textDim, marginBottom: 24 }}>Enter password to access the dashboard</p>
+        {error && <div style={{ color: C.red, fontSize: 12, marginBottom: 12, fontFamily: "monospace" }}>{error}</div>}
+        <form onSubmit={handleSubmit}>
+          <input
+            type="password" value={pw} onChange={(e) => setPw(e.target.value)}
+            placeholder="Password" autoFocus autoComplete="current-password"
+            style={{
+              width: "100%", padding: "10px 14px", borderRadius: 6,
+              border: `1px solid ${C.border}`, backgroundColor: C.bg, color: C.text,
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 13, outline: "none", marginBottom: 12,
+            }}
+          />
+          <button type="submit" disabled={loading} style={{
+            width: "100%", padding: 10, borderRadius: 6, border: "none",
+            backgroundColor: C.accent, color: C.bg, fontWeight: 600, fontSize: 13,
+            cursor: loading ? "wait" : "pointer", fontFamily: "'JetBrains Mono', monospace",
+            opacity: loading ? 0.7 : 1,
+          }}>
+            {loading ? "..." : "Log In"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ───────────────────────────────────────────────
 
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [needsLogin, setNeedsLogin] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/auth")
+      .then((res) => {
+        if (res.status === 401) setNeedsLogin(true);
+        setAuthChecked(true);
+      })
+      .catch(() => setAuthChecked(true));
+  }, []);
+
+  if (!authChecked) return null;
+  if (needsLogin) return <LoginScreen />;
+
+  return <Dashboard />;
+}
+
+function Dashboard() {
   const { state, connected, pollIntervalMs, lastUpdated, requestRefresh, hookEvents } = useMonitorSocket();
   const [expandedId, setExpandedId] = useState(null);
   const [filter, setFilter] = usePersistedState("filter", "all");
+  const [timeFilter, setTimeFilter] = usePersistedState("timeFilter", "all");
   const [folderFilter, setFolderFilter] = usePersistedState("folderFilter", "all");
   const [hostFilter, setHostFilter] = usePersistedState("hostFilter", "all");
   const [viewMode, setViewMode] = usePersistedState("viewMode", "cards");
+  const [hookEventFilter, setHookEventFilter] = usePersistedState("hookEventFilter", "all");
+  const [hookTimeFilter, setHookTimeFilter] = usePersistedState("hookTimeFilter", "all");
+  const [hookProjectFilter, setHookProjectFilter] = usePersistedState("hookProjectFilter", "all");
+  const [hookPanelOpen, setHookPanelOpen] = usePersistedState("hookPanelOpen", true);
   const [demoMode, setDemoMode] = useState(false);
   const [demoData, setDemoData] = useState(null);
   const [tick, setTick] = useState(0);
   const prevStatusesRef = useRef({});
+  const [toasts, setToasts] = useState([]);
+
+  const addToast = useCallback((title, body, color) => {
+    const id = Date.now() + Math.random();
+    setToasts((prev) => [{ id, title, body, color }, ...prev].slice(0, 5));
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
+  }, []);
+
+  const dismissToast = useCallback((id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   // ─── Desktop Notifications ────────────────────────────────
   useEffect(() => {
@@ -83,22 +220,14 @@ export default function App() {
       const oldStatus = prev[key];
       if (!oldStatus) continue;
 
-      if (oldStatus !== s.status && typeof Notification !== "undefined" && Notification.permission === "granted") {
-        if (s.status === "error" && oldStatus === "active") {
-          new Notification("Session Error", {
-            body: `${s.project?.name || s.sessionId?.slice(0, 8)} on ${s.host} hit an error`,
-            icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔴</text></svg>",
-          });
-        } else if (s.status === "completed" && (oldStatus === "active" || oldStatus === "idle")) {
-          new Notification("Session Completed", {
-            body: `${s.project?.name || s.sessionId?.slice(0, 8)} on ${s.host} finished`,
-            icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✅</text></svg>",
-          });
-        } else if (s.status === "idle" && oldStatus === "active") {
-          new Notification("Waiting for input", {
-            body: `${s.project?.name || s.sessionId?.slice(0, 8)} on ${s.host} may need attention`,
-            icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏳</text></svg>",
-          });
+      if (oldStatus !== s.status) {
+        const n = getStatusNotification(s, oldStatus);
+        if (n) {
+          addToast(n.title, n.body, s.status === "error" ? "#3b1a1a" : undefined);
+          playNotificationSound();
+          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+            new Notification(n.title, { body: n.body, icon: n.icon });
+          }
         }
       }
     }
@@ -115,27 +244,19 @@ export default function App() {
     if (lastHookIdRef.current === eventKey) return;
     lastHookIdRef.current = eventKey;
 
-    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-
-    const name = latest.project || "Claude Code";
-    if (latest.event === "Stop" && latest.stopReason === "end_turn") {
-      new Notification("Waiting for input", {
-        body: `${name} finished — your turn`,
-        tag: eventKey,
-        icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏳</text></svg>",
-      });
-    } else if (latest.event === "Stop" || latest.event === "PostToolUseFailure") {
-      new Notification(`Hook: ${latest.event}`, {
-        body: `${name}${latest.error ? ` — ${latest.error}` : latest.toolName ? ` (${latest.toolName})` : ""}`,
-        tag: eventKey,
-      });
-    } else if (latest.event === "Notification") {
-      new Notification(`Claude Code`, {
-        body: `${name} needs attention`,
-        tag: eventKey,
-      });
+    const n = getHookNotification(latest);
+    if (n) {
+      // In-page toast (always works)
+      const isError = latest.event === "PostToolUseFailure" || latest.error;
+      addToast(n.title, n.body, isError ? "#3b1a1a" : undefined);
+      // Sound
+      playNotificationSound();
+      // Desktop notification (if permitted)
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        new Notification(n.title, { body: n.body, tag: n.tag, icon: n.icon });
+      }
     }
-  }, [hookEvents]);
+  }, [hookEvents, addToast]);
 
   // If not connected for 5s, switch to demo mode
   useEffect(() => {
@@ -189,21 +310,48 @@ export default function App() {
 
   let filtered = hostFiltered;
   if (filter === "active") filtered = filtered.filter(s => s.status === "active");
+  else if (filter === "idle") filtered = filtered.filter(s => s.status === "idle");
+  else if (filter === "error") filtered = filtered.filter(s => s.status === "error");
   else if (filter === "issues") filtered = filtered.filter(s => s.status === "error" || s.status === "idle");
   if (effectiveFolderFilter !== "all") {
     filtered = filtered.filter(s => s.project?.name === effectiveFolderFilter);
   }
 
+  if (timeFilter !== "all") {
+    const now = Date.now();
+    let cutoff;
+    if (timeFilter === "1h") cutoff = now - 3600000;
+    else if (timeFilter === "today") { const d = new Date(); d.setHours(0, 0, 0, 0); cutoff = d.getTime(); }
+    else if (timeFilter === "24h") cutoff = now - 86400000;
+    else if (timeFilter === "7d") cutoff = now - 604800000;
+    if (cutoff) {
+      filtered = filtered.filter(s => {
+        if (!s.lastTimestamp) return false;
+        return new Date(s.lastTimestamp).getTime() >= cutoff;
+      });
+    }
+  }
+
   const grouped = groupSessions(filtered);
 
   const filterButtons = [
-    { key: "all", label: "All", count: sessions.length },
-    { key: "active", label: "Active", count: sessions.filter(s => s.status === "active").length },
-    { key: "issues", label: "Attention", count: sessions.filter(s => s.status === "error" || s.status === "idle").length },
+    { key: "all", label: "All", count: hostFiltered.length },
+    { key: "active", label: "Active", count: hostFiltered.filter(s => s.status === "active").length },
+    { key: "idle", label: "Idle", count: hostFiltered.filter(s => s.status === "idle").length },
+    { key: "error", label: "Errors", count: hostFiltered.filter(s => s.status === "error").length },
+  ];
+
+  const timeFilterButtons = [
+    { key: "all", label: "All Time" },
+    { key: "1h", label: "Last Hour" },
+    { key: "today", label: "Today" },
+    { key: "24h", label: "Last 24h" },
+    { key: "7d", label: "Last 7d" },
   ];
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: C.bg, color: C.text, fontFamily: "'Inter', -apple-system, sans-serif", padding: "24px 28px" }}>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
         @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.4; } 50% { transform: scale(2); opacity: 0; } }
@@ -296,7 +444,7 @@ export default function App() {
       )}
 
       {/* Aggregate stats */}
-      <AggregateStats data={data} sessions={sessions} />
+      <AggregateStats data={data} sessions={sessions} onFilterClick={setFilter} activeFilter={filter} />
 
       {/* Tmux status */}
       <div style={{ marginTop: 16 }}>
@@ -304,23 +452,40 @@ export default function App() {
       </div>
 
       {/* Filter bar */}
-      <div style={{ display: "flex", gap: 6, margin: "16px 0" }}>
-        {filterButtons.map(f => (
-          <button key={f.key} onClick={() => { setFilter(f.key); }} style={{
-            padding: "6px 14px", borderRadius: 6,
-            border: `1px solid ${filter === f.key ? C.accent + "40" : C.border}`,
-            backgroundColor: filter === f.key ? C.accentDim : "transparent",
-            color: filter === f.key ? C.accent : C.textMuted,
-            fontSize: 12, fontFamily: "'JetBrains Mono', monospace",
-            cursor: "pointer", transition: "all 0.15s",
-            display: "flex", alignItems: "center", gap: 6,
-          }}>
-            {f.label}
-            <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, backgroundColor: filter === f.key ? C.accent + "20" : C.border }}>
-              {f.count}
-            </span>
-          </button>
-        ))}
+      <div style={{ display: "flex", gap: 16, margin: "16px 0", flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {filterButtons.map(f => (
+            <button key={f.key} onClick={() => { setFilter(f.key); }} style={{
+              padding: "6px 14px", borderRadius: 6,
+              border: `1px solid ${filter === f.key ? C.accent + "40" : C.border}`,
+              backgroundColor: filter === f.key ? C.accentDim : "transparent",
+              color: filter === f.key ? C.accent : C.textMuted,
+              fontSize: 12, fontFamily: "'JetBrains Mono', monospace",
+              cursor: "pointer", transition: "all 0.15s",
+              display: "flex", alignItems: "center", gap: 6,
+            }}>
+              {f.label}
+              <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, backgroundColor: filter === f.key ? C.accent + "20" : C.border }}>
+                {f.count}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div style={{ width: 1, height: 20, backgroundColor: C.border }} />
+        <div style={{ display: "flex", gap: 6 }}>
+          {timeFilterButtons.map(f => (
+            <button key={f.key} onClick={() => { setTimeFilter(f.key); }} style={{
+              padding: "6px 14px", borderRadius: 6,
+              border: `1px solid ${timeFilter === f.key ? C.purple + "40" : C.border}`,
+              backgroundColor: timeFilter === f.key ? C.purpleDim : "transparent",
+              color: timeFilter === f.key ? C.purple : C.textMuted,
+              fontSize: 12, fontFamily: "'JetBrains Mono', monospace",
+              cursor: "pointer", transition: "all 0.15s",
+            }}>
+              {f.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Sessions */}
@@ -364,35 +529,156 @@ export default function App() {
         </div>
       ) : null}
 
-      {/* Hook event feed */}
-      {hookEvents.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <div style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "monospace", marginBottom: 8 }}>
-            Hook Events
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 200, overflowY: "auto" }}>
-            {hookEvents.slice(0, 20).map((ev, i) => {
-              const isError = ev.event === "PostToolUseFailure" || ev.error;
-              const isStop = ev.event === "Stop";
-              const dotColor = isError ? C.red : isStop ? C.green : C.accent;
-              return (
-                <div key={`${ev.timestamp}-${i}`} style={{
-                  display: "flex", alignItems: "center", gap: 8, padding: "6px 10px",
-                  borderRadius: 4, backgroundColor: C.surface, border: `1px solid ${C.border}`,
-                  fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
-                }}>
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: dotColor, flexShrink: 0 }} />
-                  <span style={{ color: C.textMuted, flexShrink: 0 }}>{new Date(ev.timestamp).toLocaleTimeString()}</span>
-                  <Badge color={dotColor} bg={isError ? C.redDim : isStop ? C.greenDim : C.accentDim}>{ev.event}</Badge>
-                  {ev.project && <span style={{ color: C.text }}>{ev.project}</span>}
-                  {ev.toolName && <span style={{ color: C.textDim }}>({ev.toolName})</span>}
-                  {ev.error && <span style={{ color: C.red, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.error}</span>}
+      {/* Hook Events Panel */}
+      {(() => {
+        const hookEventTypes = [...new Set(hookEvents.map(ev => ev.event).filter(Boolean))].sort();
+        const hookProjects = [...new Set(hookEvents.map(ev => ev.project).filter(Boolean))].sort();
+
+        const EVENT_COLORS = {
+          Notification: { color: C.accent, bg: C.accentDim },
+          Stop: { color: C.green, bg: C.greenDim },
+          SessionStart: { color: C.purple, bg: C.purpleDim },
+          SessionEnd: { color: C.textMuted, bg: "rgba(107,114,128,0.08)" },
+          PostToolUseFailure: { color: C.red, bg: C.redDim },
+        };
+
+        let filteredHooks = hookEvents;
+        if (hookEventFilter !== "all") {
+          filteredHooks = filteredHooks.filter(ev => ev.event === hookEventFilter);
+        }
+        if (hookProjectFilter !== "all") {
+          filteredHooks = filteredHooks.filter(ev => ev.project === hookProjectFilter);
+        }
+        if (hookTimeFilter !== "all") {
+          const now = Date.now();
+          let cutoff;
+          if (hookTimeFilter === "1h") cutoff = now - 3600000;
+          else if (hookTimeFilter === "today") { const d = new Date(); d.setHours(0, 0, 0, 0); cutoff = d.getTime(); }
+          if (cutoff) {
+            filteredHooks = filteredHooks.filter(ev => new Date(ev.timestamp).getTime() >= cutoff);
+          }
+        }
+
+        const hookFilterBtnStyle = (active, color) => ({
+          padding: "4px 10px", borderRadius: 4, border: `1px solid ${active ? color + "40" : C.border}`,
+          backgroundColor: active ? color + "12" : "transparent",
+          color: active ? color : C.textMuted,
+          fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+          cursor: "pointer", transition: "all 0.15s",
+        });
+
+        return (
+          <div style={{ marginTop: 20 }}>
+            {/* Header */}
+            <div
+              onClick={() => setHookPanelOpen(!hookPanelOpen)}
+              style={{
+                display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
+                marginBottom: hookPanelOpen ? 10 : 0,
+              }}
+            >
+              <span style={{ fontSize: 10, color: C.textMuted, transition: "transform 0.15s", transform: hookPanelOpen ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
+              <span style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "monospace" }}>
+                Hook Events
+              </span>
+              <span style={{
+                fontSize: 9, padding: "1px 6px", borderRadius: 8,
+                backgroundColor: C.accentDim, color: C.accent, fontFamily: "monospace",
+              }}>
+                {filteredHooks.length}
+              </span>
+            </div>
+
+            {hookPanelOpen && (
+              <>
+                {/* Filter row */}
+                <div style={{ display: "flex", gap: 12, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  {/* Event type filters */}
+                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <span style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", fontFamily: "monospace", marginRight: 2 }}>Type</span>
+                    <button onClick={() => setHookEventFilter("all")} style={hookFilterBtnStyle(hookEventFilter === "all", C.accent)}>
+                      All
+                    </button>
+                    {hookEventTypes.map(type => {
+                      const ec = EVENT_COLORS[type] || { color: C.accent, bg: C.accentDim };
+                      return (
+                        <button key={type} onClick={() => setHookEventFilter(hookEventFilter === type ? "all" : type)}
+                          style={hookFilterBtnStyle(hookEventFilter === type, ec.color)}>
+                          {type}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ width: 1, height: 16, backgroundColor: C.border }} />
+
+                  {/* Time filter */}
+                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <span style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", fontFamily: "monospace", marginRight: 2 }}>Time</span>
+                    {[{ key: "all", label: "All" }, { key: "1h", label: "1h" }, { key: "today", label: "Today" }].map(f => (
+                      <button key={f.key} onClick={() => setHookTimeFilter(f.key)} style={hookFilterBtnStyle(hookTimeFilter === f.key, C.purple)}>
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Project filter */}
+                  {hookProjects.length > 1 && (
+                    <>
+                      <div style={{ width: 1, height: 16, backgroundColor: C.border }} />
+                      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                        <span style={{ fontSize: 9, color: C.textDim, textTransform: "uppercase", fontFamily: "monospace", marginRight: 2 }}>Project</span>
+                        <select
+                          value={hookProjectFilter}
+                          onChange={(e) => setHookProjectFilter(e.target.value)}
+                          style={{
+                            padding: "4px 8px", borderRadius: 4, border: `1px solid ${C.border}`,
+                            backgroundColor: C.bg, color: C.textMuted, fontSize: 11,
+                            fontFamily: "'JetBrains Mono', monospace", cursor: "pointer", outline: "none",
+                          }}
+                        >
+                          <option value="all">All</option>
+                          {hookProjects.map(p => <option key={p} value={p}>{p}</option>)}
+                        </select>
+                      </div>
+                    </>
+                  )}
                 </div>
-              );
-            })}
+
+                {/* Event list */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 400, overflowY: "auto" }}>
+                  {filteredHooks.length === 0 && (
+                    <div style={{ textAlign: "center", padding: 16, color: C.textDim, fontFamily: "monospace", fontSize: 11 }}>
+                      {hookEvents.length === 0 ? "No hook events yet — events appear when Claude Code hooks fire" : "No events match filters"}
+                    </div>
+                  )}
+                  {filteredHooks.map((ev, i) => {
+                    const isError = ev.event === "PostToolUseFailure" || ev.error;
+                    const ec = EVENT_COLORS[ev.event] || { color: C.accent, bg: C.accentDim };
+                    const badgeColor = isError ? C.red : ec.color;
+                    const badgeBg = isError ? C.redDim : ec.bg;
+                    return (
+                      <div key={`${ev.timestamp}-${i}`} style={{
+                        display: "flex", alignItems: "center", gap: 8, padding: "6px 10px",
+                        borderRadius: 4, backgroundColor: C.surface, border: `1px solid ${C.border}`,
+                        fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+                      }}>
+                        <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: badgeColor, flexShrink: 0 }} />
+                        <span style={{ color: C.textMuted, flexShrink: 0 }}>{timeAgo(ev.timestamp)}</span>
+                        <Badge color={badgeColor} bg={badgeBg}>{ev.event}</Badge>
+                        {ev.project && <span style={{ color: C.text }}>{ev.project}</span>}
+                        {ev.toolName && <span style={{ color: C.textDim }}>({ev.toolName})</span>}
+                        {ev.stopReason && <span style={{ color: C.textDim }}>reason: {ev.stopReason}</span>}
+                        {ev.error && <span style={{ color: C.red, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{ev.error}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Footer */}
       <div style={{

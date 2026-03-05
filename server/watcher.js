@@ -39,23 +39,25 @@ export function createWatcher(claudeDir, hostName, onChange) {
     }, 500);
   };
 
-  // Watch for JSONL file changes in projects/
+  // Watch projects dir and stats file for changes.
+  // Note: chokidar glob patterns (e.g. **/*.jsonl) are unreliable on some
+  // platforms, so we watch the directories directly and filter in the callback.
   const watcher = chokidar.watch(
-    [
-      path.join(projectsDir, "**", "*.jsonl"),
-      path.join(projectsDir, "**", "sessions-index.json"),
-      statsPath,
-    ],
+    [projectsDir, statsPath],
     {
       persistent: true,
       ignoreInitial: false,
+      depth: 2,
       awaitWriteFinish: {
         stabilityThreshold: 300,
         pollInterval: 100,
       },
-      // Only watch files modified in last 24h to avoid scanning old sessions
       ignored: (filePath, stats) => {
         if (!stats) return false;
+        if (stats.isDirectory()) return false;
+        // Only react to relevant file types
+        if (!filePath.endsWith(".jsonl") && !filePath.endsWith(".json")) return true;
+        // Skip files not modified in the last 24h
         return Date.now() - stats.mtimeMs > 86_400_000;
       },
     }

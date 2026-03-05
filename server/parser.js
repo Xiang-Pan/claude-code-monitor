@@ -50,6 +50,7 @@ export async function parseSessionFile(filepath) {
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheRead = 0;
+  let lastInputTokens = 0;
   let firstTimestamp = null;
   let lastTimestamp = null;
   let lastUserMessage = "";
@@ -99,11 +100,13 @@ export async function parseSessionFile(filepath) {
           totalInputTokens += entry.message.usage.input_tokens || 0;
           totalOutputTokens += entry.message.usage.output_tokens || 0;
           totalCacheRead += entry.message.usage.cache_read_input_tokens || 0;
+          if (entry.message.usage.input_tokens) lastInputTokens = entry.message.usage.input_tokens;
         }
         if (entry.usage) {
           totalInputTokens += entry.usage.input_tokens || 0;
           totalOutputTokens += entry.usage.output_tokens || 0;
           totalCacheRead += entry.usage.cache_read_input_tokens || 0;
+          if (entry.usage.input_tokens) lastInputTokens = entry.usage.input_tokens;
         }
         if (entry.model) model = entry.model;
         break;
@@ -139,6 +142,7 @@ export async function parseSessionFile(filepath) {
       input: totalInputTokens,
       output: totalOutputTokens,
       cacheRead: totalCacheRead,
+      lastInput: lastInputTokens,
     },
     firstTimestamp,
     lastTimestamp,

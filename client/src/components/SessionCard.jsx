@@ -1,8 +1,9 @@
 import { C, STATUS_MAP } from "./theme.js";
-import { formatDuration, timeAgo, estimateCost, formatCost } from "./helpers.js";
+import { formatDuration, timeAgo, estimateCost, formatCost, contextPercent, contextColor } from "./helpers.js";
 import { StatusDot } from "./StatusDot.jsx";
 import { Badge } from "./Badge.jsx";
 import { TokenBar } from "./TokenBar.jsx";
+import { ContextBar } from "./ContextBar.jsx";
 import { CopyCommand } from "./CopyCommand.jsx";
 
 function DetailCell({ label, value, full }) {
@@ -28,6 +29,8 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
   const elapsed = session.firstTimestamp ? Date.now() - new Date(session.firstTimestamp).getTime() : 0;
   const cost = estimateCost(session.model, session.tokens);
   const agentCount = session._agents?.length || 0;
+  const ctxPct = contextPercent(session.tokens?.lastInput, session.model);
+  const ctxCol = contextColor(ctxPct);
 
   return (
     <div
@@ -83,6 +86,7 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
         <span title="Last active">↻ {timeAgo(session.lastTimestamp)}</span>
         {session.model && <span style={{ color: C.textDim }}>{session.model.replace("claude-", "").replace(/-\d{8}$/, "")}</span>}
         {cost > 0 && <span title="Estimated cost" style={{ color: C.amber }}>~{formatCost(cost)}</span>}
+        {ctxPct != null && <span title="Context window usage" style={{ color: ctxCol }}>ctx {ctxPct.toFixed(0)}%</span>}
         {session.tmux && (
           <Badge color={C.accent} bg={C.accentDim} title={`tmux: ${session.tmux.session}:${session.tmux.window}.${session.tmux.pane}`}>
             tmux:{session.tmux.session}:{session.tmux.window}
@@ -131,6 +135,12 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
           {session.tokens && (session.tokens.input > 0 || session.tokens.output > 0 || session.tokens.cacheRead > 0) && (
             <div style={{ marginBottom: 14 }}>
               <TokenBar input={session.tokens.input} output={session.tokens.output} cacheRead={session.tokens.cacheRead} />
+            </div>
+          )}
+
+          {session.tokens?.lastInput > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <ContextBar lastInput={session.tokens.lastInput} model={session.model} />
             </div>
           )}
 

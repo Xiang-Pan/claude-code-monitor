@@ -2,6 +2,7 @@
 
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import express from "express";
 import { WebSocketServer } from "ws";
@@ -75,6 +76,118 @@ async function main() {
   // ── Express app ──────────────────────────────────────────
   const app = express();
   const server = http.createServer(app);
+
+  // ── Password auth ──────────────────────────────────────────
+  const password = process.env.CCM_PASSWORD || config.server?.password || null;
+  const sessionSecret = crypto.randomBytes(32).toString("hex");
+  // Valid session tokens (set of token strings)
+  const validSessions = new Set();
+
+  function createSessionToken() {
+    const token = crypto.randomBytes(32).toString("hex");
+    validSessions.add(token);
+    return token;
+  }
+
+  function isAuthenticated(req) {
+    if (!password) return true;
+    const cookie = req.headers.cookie || "";
+    const match = cookie.match(/(?:^|;\s*)ccm_session=([^;]+)/);
+    return match && validSessions.has(match[1]);
+  }
+
+  function isAuthenticatedWs(req) {
+    if (!password) return true;
+    const cookie = req.headers.cookie || "";
+    const match = cookie.match(/(?:^|;\s*)ccm_session=([^;]+)/);
+    return match && validSessions.has(match[1]);
+  }
+
+  // Login endpoint
+  app.use("/api/login", express.json());
+  app.post("/api/login", (req, res) => {
+    if (!password) return res.json({ ok: true });
+    const { password: pw } = req.body || {};
+    if (pw !== password) {
+      return res.status(401).json({ error: "Wrong password" });
+    }
+    const token = createSessionToken();
+    res.setHeader("Set-Cookie", `ccm_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`);
+    res.json({ ok: true });
+  });
+
+  // Auth check endpoint (for client to test if authenticated)
+  app.get("/api/auth", (req, res) => {
+    if (!password) return res.json({ ok: true, authRequired: false });
+    if (isAuthenticated(req)) return res.json({ ok: true, authRequired: true });
+    return res.status(401).json({ error: "Not authenticated", authRequired: true });
+  });
+
+  // Auth middleware — protect everything except login, hook, and client-update
+  app.use((req, res, next) => {
+    if (!password) return next();
+    // Skip auth for these paths (they have their own auth)
+    if (req.path === "/api/login" || req.path === "/api/auth" ||
+        req.path === "/api/hook" || req.path === "/api/client-update" ||
+        req.path === "/api/health") {
+      return next();
+    }
+    if (isAuthenticated(req)) return next();
+    // For API requests, return 401 JSON
+    if (req.path.startsWith("/api/")) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    // For page requests, serve a login page
+    return res.status(401).send(loginPageHtml());
+  });
+
+  function loginPageHtml() {
+    return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login — Claude Code Monitor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0c10; color: #c8cdd8; font-family: 'Inter', -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  .login-box { background: #12151c; border: 1px solid #1e2330; border-radius: 12px; padding: 40px; width: 360px; text-align: center; }
+  .login-box h1 { font-size: 20px; font-weight: 700; color: #e2e5eb; font-family: 'JetBrains Mono', monospace; margin-bottom: 8px; }
+  .login-box .accent { color: #60a5fa; }
+  .login-box p { font-size: 12px; color: #6b7280; margin-bottom: 24px; }
+  .login-box input { width: 100%; padding: 10px 14px; border-radius: 6px; border: 1px solid #1e2330; background: #0a0c10; color: #c8cdd8; font-family: 'JetBrains Mono', monospace; font-size: 13px; outline: none; margin-bottom: 12px; }
+  .login-box input:focus { border-color: #60a5fa; }
+  .login-box button { width: 100%; padding: 10px; border-radius: 6px; border: none; background: #60a5fa; color: #0a0c10; font-weight: 600; font-size: 13px; cursor: pointer; font-family: 'JetBrains Mono', monospace; }
+  .login-box button:hover { background: #93c5fd; }
+  .error { color: #f87171; font-size: 12px; margin-bottom: 12px; display: none; font-family: monospace; }
+</style>
+</head><body>
+<div class="login-box">
+  <h1><span class="accent">⬡</span> Claude Code Monitor</h1>
+  <p>Enter password to access the dashboard</p>
+  <div class="error" id="err"></div>
+  <form id="form">
+    <input type="password" id="pw" placeholder="Password" autofocus autocomplete="current-password" />
+    <button type="submit">Log In</button>
+  </form>
+</div>
+<script>
+document.getElementById("form").onsubmit = async (e) => {
+  e.preventDefault();
+  const pw = document.getElementById("pw").value;
+  const err = document.getElementById("err");
+  err.style.display = "none";
+  try {
+    const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: pw }) });
+    if (res.ok) { window.location.reload(); }
+    else { err.textContent = "Wrong password"; err.style.display = "block"; }
+  } catch { err.textContent = "Connection error"; err.style.display = "block"; }
+};
+</script>
+</body></html>`;
+  }
+
+  if (password) {
+    console.log(`  Auth:     Password-protected`);
+  }
 
   // ── REST API ─────────────────────────────────────────────
   const aggregator = new Aggregator();
@@ -178,7 +291,8 @@ async function main() {
     const error = payload.tool_input?.error || payload.error || null;
     const stopReason = payload.stop_reason || null;
 
-    console.log(`[hook] ${event}${project ? ` (${project})` : ""}${toolName ? ` tool=${toolName}` : ""}`);
+    const openClients = [...wss.clients].filter(c => c.readyState === c.OPEN).length;
+    console.log(`[hook] ${event}${project ? ` (${project})` : ""}${toolName ? ` tool=${toolName}` : ""} → broadcasting to ${openClients} client(s)`);
 
     // Broadcast to all connected dashboard clients
     const notification = {
@@ -318,7 +432,12 @@ async function main() {
   // ── WebSocket ────────────────────────────────────────────
   const wss = new WebSocketServer({ server, path: "/ws" });
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    // Verify auth for WebSocket connections
+    if (!isAuthenticatedWs(req)) {
+      ws.close(4401, "Not authenticated");
+      return;
+    }
     console.log("[ws] Client connected");
 
     // Send current state immediately

@@ -36,7 +36,7 @@ export function useMonitorSocket() {
             setPollIntervalMs(msg.data.pollIntervalMs);
           }
         } else if (msg.type === "hook") {
-          setHookEvents((prev) => [msg.data, ...prev].slice(0, 50));
+          setHookEvents((prev) => [msg.data, ...prev].slice(0, 200));
         }
       } catch (err) {
         console.error("[ws] Parse error:", err);
