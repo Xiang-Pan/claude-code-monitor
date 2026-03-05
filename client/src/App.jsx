@@ -207,7 +207,8 @@ function Dashboard() {
   const [hookTimeFilter, setHookTimeFilter] = usePersistedState("hookTimeFilter", "all");
   const [hookProjectFilter, setHookProjectFilter] = usePersistedState("hookProjectFilter", "all");
   const [hookPanelOpen, setHookPanelOpen] = usePersistedState("hookPanelOpen", true);
-  const [voiceEnabled, setVoiceEnabled] = usePersistedState("voiceEnabled", false);
+  const [voiceTypes, setVoiceTypes] = usePersistedState("voiceTypes", ["completed", "error", "idle"]);
+  const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
   const [demoMode, setDemoMode] = useState(false);
   const [demoData, setDemoData] = useState(null);
   const [tick, setTick] = useState(0);
@@ -223,6 +224,15 @@ function Dashboard() {
   const dismissToast = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  // ─── Close voice menu on outside click ──────────────────
+  const voiceMenuRef = useRef(null);
+  useEffect(() => {
+    if (!voiceMenuOpen) return;
+    const handler = (e) => { if (voiceMenuRef.current && !voiceMenuRef.current.contains(e.target)) setVoiceMenuOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [voiceMenuOpen]);
 
   // ─── Desktop Notifications ────────────────────────────────
   useEffect(() => {
@@ -248,7 +258,7 @@ function Dashboard() {
         if (n) {
           addToast(n.title, n.body, s.status === "error" ? "#3b1a1a" : undefined);
           playNotificationSound();
-          if (voiceEnabled) speakNotification(`${n.title}. ${n.body}`);
+          if (voiceTypes.includes(n.type)) speakNotification(`${n.title}. ${n.body}`);
           if (typeof Notification !== "undefined" && Notification.permission === "granted") {
             new Notification(n.title, { body: n.body, icon: n.icon });
           }
@@ -275,12 +285,14 @@ function Dashboard() {
       addToast(n.title, n.body, isError ? "#3b1a1a" : undefined);
       // Sound
       playNotificationSound();
+      // Voice (if this type is enabled)
+      if (voiceTypes.includes(n.type)) speakNotification(`${n.title}. ${n.body}`);
       // Desktop notification (if permitted)
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         new Notification(n.title, { body: n.body, tag: n.tag, icon: n.icon });
       }
     }
-  }, [hookEvents, addToast]);
+  }, [hookEvents, addToast, voiceTypes]);
 
   // If not connected for 5s, switch to demo mode
   useEffect(() => {
@@ -412,16 +424,47 @@ function Dashboard() {
             }}>≡ Table</button>
           </div>
 
-          <button
-            onClick={() => setVoiceEnabled(!voiceEnabled)}
-            title={voiceEnabled ? "Voice notifications ON" : "Voice notifications OFF"}
-            style={{
-              padding: "5px 10px", borderRadius: 6, border: `1px solid ${voiceEnabled ? C.accent + "40" : C.border}`,
-              backgroundColor: voiceEnabled ? C.accentDim : "transparent",
-              color: voiceEnabled ? C.accent : C.textMuted,
-              fontSize: 11, fontFamily: "monospace", cursor: "pointer", transition: "all 0.15s",
-            }}
-          >{voiceEnabled ? "Voice ON" : "Voice OFF"}</button>
+          <div ref={voiceMenuRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => setVoiceMenuOpen(!voiceMenuOpen)}
+              style={{
+                padding: "5px 10px", borderRadius: 6, border: `1px solid ${voiceTypes.length > 0 ? C.accent + "40" : C.border}`,
+                backgroundColor: voiceTypes.length > 0 ? C.accentDim : "transparent",
+                color: voiceTypes.length > 0 ? C.accent : C.textMuted,
+                fontSize: 11, fontFamily: "monospace", cursor: "pointer", transition: "all 0.15s",
+              }}
+            >Voice {voiceTypes.length > 0 ? `(${voiceTypes.length})` : "OFF"}</button>
+            {voiceMenuOpen && (
+              <div style={{
+                position: "absolute", top: "100%", right: 0, marginTop: 4, padding: 8,
+                backgroundColor: C.surface, border: `1px solid ${C.border}`, borderRadius: 8,
+                boxShadow: "0 4px 20px rgba(0,0,0,0.5)", zIndex: 100, minWidth: 180,
+              }}>
+                {[
+                  { key: "completed", label: "Completed" },
+                  { key: "error", label: "Error" },
+                  { key: "idle", label: "Waiting for input" },
+                  { key: "hook_stop", label: "Hook: Stop" },
+                  { key: "hook_error", label: "Hook: Failure" },
+                  { key: "hook_notify", label: "Hook: Notification" },
+                ].map(opt => {
+                  const checked = voiceTypes.includes(opt.key);
+                  return (
+                    <label key={opt.key} style={{
+                      display: "flex", alignItems: "center", gap: 6, padding: "4px 6px",
+                      cursor: "pointer", fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+                      color: checked ? C.accent : C.textMuted, borderRadius: 4,
+                    }}>
+                      <input type="checkbox" checked={checked} onChange={() => {
+                        setVoiceTypes(checked ? voiceTypes.filter(t => t !== opt.key) : [...voiceTypes, opt.key]);
+                      }} style={{ accentColor: C.accent }} />
+                      {opt.label}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {demoMode && (
             <Badge color={C.amber} bg={C.amberDim}>DEMO MODE</Badge>
