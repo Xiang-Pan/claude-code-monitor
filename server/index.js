@@ -81,28 +81,41 @@ async function main() {
 
   // ── Password auth ──────────────────────────────────────────
   const password = process.env.CCM_PASSWORD || config.server?.password || null;
-  const sessionSecret = crypto.randomBytes(32).toString("hex");
-  // Valid session tokens (set of token strings)
-  const validSessions = new Set();
+  const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  const validSessions = new Map(); // token → expiresAt
 
   function createSessionToken() {
     const token = crypto.randomBytes(32).toString("hex");
-    validSessions.add(token);
+    validSessions.set(token, Date.now() + SESSION_TTL_MS);
     return token;
   }
+
+  function validateSessionToken(token) {
+    if (!token) return false;
+    const expiresAt = validSessions.get(token);
+    if (!expiresAt) return false;
+    if (expiresAt <= Date.now()) { validSessions.delete(token); return false; }
+    return true;
+  }
+
+  // Prune expired tokens every hour
+  setInterval(() => {
+    const now = Date.now();
+    for (const [token, exp] of validSessions) { if (exp <= now) validSessions.delete(token); }
+  }, 3600_000);
 
   function isAuthenticated(req) {
     if (!password) return true;
     const cookie = req.headers.cookie || "";
     const match = cookie.match(/(?:^|;\s*)ccm_session=([^;]+)/);
-    return match && validSessions.has(match[1]);
+    return !!(match && validateSessionToken(match[1]));
   }
 
   function isAuthenticatedWs(req) {
     if (!password) return true;
     const cookie = req.headers.cookie || "";
     const match = cookie.match(/(?:^|;\s*)ccm_session=([^;]+)/);
-    return match && validSessions.has(match[1]);
+    return !!(match && validateSessionToken(match[1]));
   }
 
   // Login endpoint
@@ -114,7 +127,11 @@ async function main() {
       return res.status(401).json({ error: "Wrong password" });
     }
     const token = createSessionToken();
-    res.setHeader("Set-Cookie", `ccm_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`);
+    let cookie = `ccm_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`;
+    if (req.secure || (req.headers["x-forwarded-proto"] || "").split(",")[0].trim() === "https") {
+      cookie += "; Secure";
+    }
+    res.setHeader("Set-Cookie", cookie);
     res.json({ ok: true });
   });
 
@@ -293,7 +310,7 @@ document.getElementById("form").onsubmit = async (e) => {
     const error = payload.tool_input?.error || payload.error || null;
     const stopReason = payload.stop_reason || null;
 
-    const openClients = [...wss.clients].filter(c => c.readyState === c.OPEN).length;
+    const openClients = [...wss.clients].filter(c => c.readyState === 1).length;
     console.log(`[hook] ${event}${project ? ` (${project})` : ""}${toolName ? ` tool=${toolName}` : ""} → broadcasting to ${openClients} client(s)`);
 
     // Broadcast to all connected dashboard clients
@@ -303,7 +320,7 @@ document.getElementById("form").onsubmit = async (e) => {
     };
     const msg = JSON.stringify(notification);
     for (const client of wss.clients) {
-      if (client.readyState === client.OPEN) {
+      if (client.readyState === 1) {
         client.send(msg);
       }
     }

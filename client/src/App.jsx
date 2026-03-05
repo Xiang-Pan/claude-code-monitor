@@ -11,21 +11,23 @@ import { AggregateStats } from "./components/AggregateStats.jsx";
 import { HostStatus } from "./components/HostStatus.jsx";
 import { TmuxPanel } from "./components/TmuxPanel.jsx";
 import { getStatusNotification, getHookNotification } from "./notifications.js";
+import { LivePulseChart } from "./components/LivePulseChart.jsx";
 
 // ─── Notification sound (short beep via Web Audio API) ─────
+let _audioCtx = null;
 function playNotificationSound() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = _audioCtx.createOscillator();
+    const gain = _audioCtx.createGain();
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(_audioCtx.destination);
     osc.frequency.value = 880;
     osc.type = "sine";
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.3, _audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, _audioCtx.currentTime + 0.3);
+    osc.start(_audioCtx.currentTime);
+    osc.stop(_audioCtx.currentTime + 0.3);
   } catch {}
 }
 
@@ -555,6 +557,9 @@ function Dashboard() {
           })}
         </div>
       ) : null}
+
+      {/* Live Pulse Chart */}
+      <LivePulseChart hookEvents={hookEvents} />
 
       {/* Hook Events Panel */}
       {(() => {
