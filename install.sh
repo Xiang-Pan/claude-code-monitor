@@ -38,6 +38,15 @@ if ! command -v tmux &>/dev/null; then
   exit 1
 fi
 
+if ! command -v curl &>/dev/null; then
+  echo "Error: curl is required but not found."
+  echo "  Install it with your package manager, e.g.:"
+  echo "    apt install curl   (Debian/Ubuntu)"
+  echo "    yum install curl   (RHEL/CentOS)"
+  echo "    brew install curl  (macOS)"
+  exit 1
+fi
+
 # Detect JS runtime: prefer bun, then node; auto-install bun if neither found
 if command -v bun &>/dev/null; then
   RUNTIME="bun"
@@ -45,7 +54,7 @@ elif command -v node &>/dev/null; then
   RUNTIME="node"
 else
   echo "  No JS runtime found. Installing bun..."
-  curl -fsSL https://bun.sh/install | bash
+  curl -fsSL https://bun.sh/install | bash || true
   # Source bun into current session
   export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
   export PATH="$BUN_INSTALL/bin:$PATH"
@@ -111,16 +120,16 @@ if [ "$MODE" = "server" ]; then
   fi
 
   tmux new-session -d -s "$TMUX_SESSION" -n server \
-    "${TMUX_ENV}cd $INSTALL_DIR && $RUNTIME server/index.js; read"
+    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME server/index.js; read"
   tmux new-window -t "$TMUX_SESSION" -n agent \
-    "${TMUX_ENV}cd $INSTALL_DIR && $RUNTIME agent/index.js --server http://localhost:$PORT --name $HOSTNAME; read"
+    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME agent/index.js --server \"http://localhost:$PORT\" --name \"$HOSTNAME\"; read"
 
   echo ""
   echo "  ✓ Dashboard: http://localhost:$PORT"
 else
   # Agent-only: just push data to remote server
   tmux new-session -d -s "$TMUX_SESSION" -n agent \
-    "${TMUX_ENV}cd $INSTALL_DIR && $RUNTIME agent/index.js --server $SERVER --name $HOSTNAME; read"
+    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME agent/index.js --server \"$SERVER\" --name \"$HOSTNAME\"; read"
 
   echo ""
   echo "  ✓ Pushing to: $SERVER"
