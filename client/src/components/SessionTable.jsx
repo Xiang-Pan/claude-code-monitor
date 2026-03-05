@@ -1,5 +1,5 @@
 import { C } from "./theme.js";
-import { formatTokens, timeAgo, estimateCost, formatCost } from "./helpers.js";
+import { formatTokens, timeAgo, estimateCost, formatCost, contextPercent, contextColor } from "./helpers.js";
 import { StatusDot } from "./StatusDot.jsx";
 import { Badge } from "./Badge.jsx";
 
@@ -28,6 +28,7 @@ export function SessionTable({ sessions, expandedId, setExpandedId }) {
             <th style={thStyle}>Msgs</th>
             <th style={thStyle}>Tools</th>
             <th style={thStyle}>Tokens</th>
+            <th style={thStyle}>Context</th>
             <th style={thStyle}>Cost</th>
             <th style={thStyle}>Last Active</th>
             <th style={thStyle}>Model</th>
@@ -38,6 +39,8 @@ export function SessionTable({ sessions, expandedId, setExpandedId }) {
             const uid = `${session.sessionId}:${session.host}`;
             const totalTokens = (session.tokens?.input || 0) + (session.tokens?.output || 0) + (session.tokens?.cacheRead || 0);
             const cost = estimateCost(session.model, session.tokens);
+            const ctxPct = contextPercent(session.tokens?.lastInput, session.model);
+            const ctxCol = contextColor(ctxPct);
             const isExpanded = expandedId === uid;
             const agents = session._agents || [];
 
@@ -57,6 +60,7 @@ export function SessionTable({ sessions, expandedId, setExpandedId }) {
                 <td style={tdStyle}>{session.messages || 0}</td>
                 <td style={tdStyle}>{session.toolCalls || 0}</td>
                 <td style={tdStyle}>{formatTokens(totalTokens)}</td>
+                <td style={{ ...tdStyle, color: ctxCol }}>{ctxPct != null ? `${ctxPct.toFixed(0)}%` : "—"}</td>
                 <td style={{ ...tdStyle, color: C.amber }}>{formatCost(cost)}</td>
                 <td style={{ ...tdStyle, color: C.textMuted }}>{timeAgo(session.lastTimestamp)}</td>
                 <td style={{ ...tdStyle, color: C.textDim, fontSize: 11 }}>{session.model ? session.model.replace("claude-", "").replace(/-\d{8}$/, "") : "—"}</td>
@@ -65,6 +69,8 @@ export function SessionTable({ sessions, expandedId, setExpandedId }) {
                 const auid = `${agent.sessionId}:${agent.host}`;
                 const agentCost = estimateCost(agent.model, agent.tokens);
                 const agentTokens = (agent.tokens?.input || 0) + (agent.tokens?.output || 0) + (agent.tokens?.cacheRead || 0);
+                const agentCtxPct = contextPercent(agent.tokens?.lastInput, agent.model);
+                const agentCtxCol = contextColor(agentCtxPct);
                 return (
                   <tr key={auid} style={{ backgroundColor: "rgba(167,139,250,0.03)" }}>
                     <td style={tdStyle}><StatusDot status={agent.status} /></td>
@@ -77,6 +83,7 @@ export function SessionTable({ sessions, expandedId, setExpandedId }) {
                     <td style={tdStyle}>{agent.messages || 0}</td>
                     <td style={tdStyle}>{agent.toolCalls || 0}</td>
                     <td style={tdStyle}>{formatTokens(agentTokens)}</td>
+                    <td style={{ ...tdStyle, color: agentCtxCol }}>{agentCtxPct != null ? `${agentCtxPct.toFixed(0)}%` : "—"}</td>
                     <td style={{ ...tdStyle, color: C.amber }}>{formatCost(agentCost)}</td>
                     <td style={{ ...tdStyle, color: C.textMuted }}>{timeAgo(agent.lastTimestamp)}</td>
                     <td style={{ ...tdStyle, color: C.textDim, fontSize: 11 }}>{agent.model ? agent.model.replace("claude-", "").replace(/-\d{8}$/, "") : "—"}</td>

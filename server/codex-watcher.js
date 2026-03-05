@@ -36,21 +36,22 @@ export function createCodexWatcher(codexDir, hostName, onChange) {
     }, 500);
   };
 
-  const watcher = chokidar.watch(
-    [path.join(sessionsDir, "**", "*.jsonl")],
-    {
-      persistent: true,
-      ignoreInitial: false,
-      awaitWriteFinish: {
-        stabilityThreshold: 300,
-        pollInterval: 100,
-      },
-      ignored: (filePath, stats) => {
-        if (!stats) return false;
-        return Date.now() - stats.mtimeMs > 86_400_000;
-      },
-    }
-  );
+  // Watch sessions dir directly — chokidar globs are unreliable on some platforms.
+  const watcher = chokidar.watch(sessionsDir, {
+    persistent: true,
+    ignoreInitial: false,
+    depth: 4, // sessions/YYYY/MM/DD/*.jsonl
+    awaitWriteFinish: {
+      stabilityThreshold: 300,
+      pollInterval: 100,
+    },
+    ignored: (filePath, stats) => {
+      if (!stats) return false;
+      if (stats.isDirectory()) return false;
+      if (!filePath.endsWith(".jsonl")) return true;
+      return Date.now() - stats.mtimeMs > 86_400_000;
+    },
+  });
 
   watcher
     .on("add", handleChange)

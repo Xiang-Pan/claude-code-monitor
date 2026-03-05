@@ -39,6 +39,7 @@ export async function parseCodexSessionFile(filepath) {
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheRead = 0;
+  let lastInputTokens = 0;
   let firstTimestamp = null;
   let lastTimestamp = null;
   let lastUserMessage = "";
@@ -104,6 +105,7 @@ export async function parseCodexSessionFile(filepath) {
           totalInputTokens += p.input_tokens || 0;
           totalOutputTokens += p.output_tokens || 0;
           totalCacheRead += p.cached_input_tokens || 0;
+          if (p.input_tokens) lastInputTokens = p.input_tokens;
           if (p.model) model = p.model;
           break;
 
@@ -136,6 +138,7 @@ export async function parseCodexSessionFile(filepath) {
       input: totalInputTokens,
       output: totalOutputTokens,
       cacheRead: totalCacheRead,
+      lastInput: lastInputTokens,
     },
     firstTimestamp,
     lastTimestamp,

@@ -11,7 +11,7 @@ set -euo pipefail
 REPO="https://github.com/Xiang-Pan/claude-code-monitor.git"
 INSTALL_DIR="${CCM_DIR:-$HOME/.claude-code-monitor}"
 PORT="${CCM_PORT:-3456}"
-SERVER="${CCM_SERVER:-https://claude.xiangpan.org}"
+SERVER="${CCM_SERVER:-http://localhost:3456}"
 MODE="${CCM_MODE:-agent}"
 TMUX_SESSION="ccm"
 

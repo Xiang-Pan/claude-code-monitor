@@ -24,6 +24,7 @@
   "server": {
     "port": 3456,
     "pollIntervalMs": 3000,
+    "password": "",
     "clientTokens": [],
     "clientStaleMs": 15000
   }

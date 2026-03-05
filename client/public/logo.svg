@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6C8EFF"/>
+      <stop offset="100%" stop-color="#4A6CF7"/>
+    </linearGradient>
+    <linearGradient id="pulse" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#6C8EFF"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#6C8EFF" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#4A6CF7" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="14" flood-color="#4A6CF7" flood-opacity="0.4"/>
+    </filter>
+    <filter id="node-glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Outer glow -->
+  <polygon points="256,38 448,148 448,364 256,474 64,364 64,148"
+    fill="url(#glow)" stroke="none"/>
+
+  <!-- ═══ Benzene ring: outer hexagon (single bonds) ═══ -->
+  <polygon points="256,68 430,168 430,344 256,444 82,344 82,168"
+    fill="#0D1117" stroke="url(#ring)" stroke-width="5" stroke-linejoin="round"
+    filter="url(#shadow)"/>
+
+  <!-- Benzene ring: inner double-bond segments (3 alternating sides) -->
+  <!-- Top-right double bond -->
+  <line x1="280" y1="88" x2="406" y2="178" stroke="#6C8EFF" stroke-width="3" stroke-opacity="0.5"/>
+  <!-- Bottom double bond -->
+  <line x1="406" y1="334" x2="280" y2="424" stroke="#6C8EFF" stroke-width="3" stroke-opacity="0.5"/>
+  <!-- Top-left double bond -->
+  <line x1="106" y1="178" x2="232" y2="88" stroke="#6C8EFF" stroke-width="3" stroke-opacity="0.5"/>
+
+  <!-- ═══ 6 Carbon nodes at vertices ═══ -->
+  <!-- Top -->
+  <circle cx="256" cy="68" r="11" fill="#0D1117" stroke="#22D3EE" stroke-width="2.5" filter="url(#node-glow)"/>
+  <!-- Top-right -->
+  <circle cx="430" cy="168" r="11" fill="#0D1117" stroke="#6C8EFF" stroke-width="2.5" filter="url(#node-glow)"/>
+  <!-- Bottom-right -->
+  <circle cx="430" cy="344" r="11" fill="#0D1117" stroke="#22D3EE" stroke-width="2.5" filter="url(#node-glow)"/>
+  <!-- Bottom -->
+  <circle cx="256" cy="444" r="11" fill="#0D1117" stroke="#6C8EFF" stroke-width="2.5" filter="url(#node-glow)"/>
+  <!-- Bottom-left -->
+  <circle cx="82" cy="344" r="11" fill="#0D1117" stroke="#22D3EE" stroke-width="2.5" filter="url(#node-glow)"/>
+  <!-- Top-left -->
+  <circle cx="82" cy="168" r="11" fill="#0D1117" stroke="#6C8EFF" stroke-width="2.5" filter="url(#node-glow)"/>
+
+  <!-- Small inner dots (active cores) -->
+  <circle cx="256" cy="68" r="4" fill="#22D3EE"/>
+  <circle cx="430" cy="168" r="4" fill="#6C8EFF"/>
+  <circle cx="430" cy="344" r="4" fill="#22D3EE"/>
+  <circle cx="256" cy="444" r="4" fill="#6C8EFF"/>
+  <circle cx="82" cy="344" r="4" fill="#22D3EE"/>
+  <circle cx="82" cy="168" r="4" fill="#6C8EFF"/>
+
+  <!-- ═══ Monitor pulse line through center ═══ -->
+  <polyline points="118,256 178,256 206,206 234,316 262,186 290,306 318,226 346,256 394,256"
+    fill="none" stroke="url(#pulse)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Live pulse dot -->
+  <circle cx="394" cy="256" r="7" fill="#22D3EE"/>
+  <circle cx="394" cy="256" r="13" fill="#22D3EE" opacity="0.25"/>
+
+  <!-- ═══ Connection lines: nodes → pulse ═══ -->
+  <line x1="256" y1="79" x2="262" y2="186" stroke="#22D3EE" stroke-width="1" stroke-opacity="0.25" stroke-dasharray="4 4"/>
+  <line x1="430" y1="179" x2="346" y2="256" stroke="#6C8EFF" stroke-width="1" stroke-opacity="0.25" stroke-dasharray="4 4"/>
+  <line x1="82" y1="179" x2="178" y2="256" stroke="#6C8EFF" stroke-width="1" stroke-opacity="0.25" stroke-dasharray="4 4"/>
+  <line x1="430" y1="333" x2="346" y2="256" stroke="#22D3EE" stroke-width="1" stroke-opacity="0.15" stroke-dasharray="4 4"/>
+  <line x1="82" y1="333" x2="178" y2="256" stroke="#22D3EE" stroke-width="1" stroke-opacity="0.15" stroke-dasharray="4 4"/>
+</svg>
