@@ -32,6 +32,39 @@ function playNotificationSound() {
 }
 
 // ─── Voice notification (Edge TTS via server, queued) ─────
+const TTS_VOICES = [
+  { group: "zh-CN", voices: [
+    { id: "zh-CN-XiaoxiaoNeural", label: "Xiaoxiao (F)" },
+    { id: "zh-CN-XiaoyiNeural", label: "Xiaoyi (F)" },
+    { id: "zh-CN-YunxiNeural", label: "Yunxi (M)" },
+    { id: "zh-CN-YunyangNeural", label: "Yunyang (M)" },
+    { id: "zh-CN-YunjianNeural", label: "Yunjian (M)" },
+  ]},
+  { group: "zh-HK", voices: [
+    { id: "zh-HK-HiuGaaiNeural", label: "HiuGaai (F)" },
+    { id: "zh-HK-WanLungNeural", label: "WanLung (M)" },
+  ]},
+  { group: "zh-TW", voices: [
+    { id: "zh-TW-HsiaoYuNeural", label: "HsiaoYu (F)" },
+    { id: "zh-TW-YunJheNeural", label: "YunJhe (M)" },
+  ]},
+  { group: "en-US", voices: [
+    { id: "en-US-JennyNeural", label: "Jenny (F)" },
+    { id: "en-US-AriaNeural", label: "Aria (F)" },
+    { id: "en-US-GuyNeural", label: "Guy (M)" },
+    { id: "en-US-BrianNeural", label: "Brian (M)" },
+    { id: "en-US-AndrewNeural", label: "Andrew (M)" },
+  ]},
+  { group: "en-GB", voices: [
+    { id: "en-GB-SoniaNeural", label: "Sonia (F)" },
+    { id: "en-GB-RyanNeural", label: "Ryan (M)" },
+  ]},
+  { group: "en-AU", voices: [
+    { id: "en-AU-NatashaNeural", label: "Natasha (F)" },
+    { id: "en-AU-WilliamNeural", label: "William (M)" },
+  ]},
+];
+
 const _ttsQueue = [];
 let _ttsPlaying = false;
 let _ttsCurrentAudio = null;
@@ -44,8 +77,10 @@ function _ttsPlayNext() {
   if (_ttsQueue.length === 0) { _ttsPlaying = false; _ttsCurrentAudio = null; return; }
   _ttsPlaying = true;
   const text = _ttsQueue.shift();
+  let voice = "zh-CN-XiaoxiaoNeural";
+  try { const v = localStorage.getItem("ccm:ttsVoice"); if (v) voice = JSON.parse(v); } catch {}
   try {
-    const audio = new Audio(`/api/tts?text=${encodeURIComponent(text.slice(0, 200))}`);
+    const audio = new Audio(`/api/tts?text=${encodeURIComponent(text.slice(0, 200))}&voice=${encodeURIComponent(voice)}`);
     audio.volume = 0.8;
     _ttsCurrentAudio = audio;
     let done = false;
@@ -218,6 +253,7 @@ function Dashboard() {
   const [hookProjectFilter, setHookProjectFilter] = usePersistedState("hookProjectFilter", "all");
   const [hookPanelOpen, setHookPanelOpen] = usePersistedState("hookPanelOpen", true);
   const [voiceTypes, setVoiceTypes] = usePersistedState("voiceTypes", ["completed", "error", "idle"]);
+  const [ttsVoice, setTtsVoice] = usePersistedState("ttsVoice", "zh-CN-XiaoxiaoNeural");
   const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
   const [demoMode, setDemoMode] = useState(false);
   const [demoData, setDemoData] = useState(null);
@@ -450,6 +486,29 @@ function Dashboard() {
                 backgroundColor: C.surface, border: `1px solid ${C.border}`, borderRadius: 8,
                 boxShadow: "0 4px 20px rgba(0,0,0,0.5)", zIndex: 100, minWidth: 180,
               }}>
+                <select
+                  value={ttsVoice}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setTtsVoice(v);
+                    const sample = v.startsWith("zh") ? "你好，这是语音测试" : "Hello, this is a voice test";
+                    const a = new Audio(`/api/tts?text=${encodeURIComponent(sample)}&voice=${encodeURIComponent(v)}`);
+                    a.volume = 0.8;
+                    a.play().catch(() => {});
+                  }}
+                  style={{
+                    width: "100%", padding: "4px 6px", borderRadius: 4, border: `1px solid ${C.border}`,
+                    backgroundColor: C.bg, color: C.textMuted, fontSize: 11,
+                    fontFamily: "'JetBrains Mono', monospace", cursor: "pointer", outline: "none",
+                    marginBottom: 8,
+                  }}
+                >
+                  {TTS_VOICES.map(g => (
+                    <optgroup key={g.group} label={g.group}>
+                      {g.voices.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
                 {[
                   { key: "completed", label: "Completed" },
                   { key: "error", label: "Error" },
