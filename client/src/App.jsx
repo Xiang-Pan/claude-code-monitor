@@ -217,7 +217,7 @@ function Dashboard() {
   const [hookTimeFilter, setHookTimeFilter] = usePersistedState("hookTimeFilter", "all");
   const [hookProjectFilter, setHookProjectFilter] = usePersistedState("hookProjectFilter", "all");
   const [hookPanelOpen, setHookPanelOpen] = usePersistedState("hookPanelOpen", true);
-  const [voiceTypes, setVoiceTypes] = usePersistedState("voiceTypes", ["completed", "error", "idle"]);
+  const [voiceTypes, setVoiceTypes] = usePersistedState("voiceTypes", ["completed", "error", "idle", "stuck"]);
   const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
   const [demoMode, setDemoMode] = useState(false);
   const [demoData, setDemoData] = useState(null);
@@ -357,8 +357,9 @@ function Dashboard() {
   let filtered = hostFiltered;
   if (filter === "active") filtered = filtered.filter(s => s.status === "active");
   else if (filter === "idle") filtered = filtered.filter(s => s.status === "idle");
+  else if (filter === "stuck") filtered = filtered.filter(s => s.status === "stuck");
   else if (filter === "error") filtered = filtered.filter(s => s.status === "error");
-  else if (filter === "issues") filtered = filtered.filter(s => s.status === "error" || s.status === "idle");
+  else if (filter === "issues") filtered = filtered.filter(s => s.status === "error" || s.status === "idle" || s.status === "stuck");
   if (effectiveFolderFilter !== "all") {
     filtered = filtered.filter(s => s.project?.name === effectiveFolderFilter);
   }
@@ -383,6 +384,7 @@ function Dashboard() {
   const filterButtons = [
     { key: "all", label: "All", count: hostFiltered.length },
     { key: "active", label: "Active", count: hostFiltered.filter(s => s.status === "active").length },
+    { key: "stuck", label: "Stuck", count: hostFiltered.filter(s => s.status === "stuck").length },
     { key: "idle", label: "Idle", count: hostFiltered.filter(s => s.status === "idle").length },
     { key: "error", label: "Errors", count: hostFiltered.filter(s => s.status === "error").length },
   ];
@@ -454,6 +456,7 @@ function Dashboard() {
                   { key: "completed", label: "Completed" },
                   { key: "error", label: "Error" },
                   { key: "idle", label: "Waiting for input" },
+                  { key: "stuck", label: "Session stuck" },
                   { key: "hook_stop", label: "Hook: Stop" },
                   { key: "hook_error", label: "Hook: Failure" },
                   { key: "hook_notify", label: "Hook: Notification" },

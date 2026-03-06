@@ -78,10 +78,10 @@ export class Aggregator {
       allSessions.push(...deduped);
     }
 
-    // Sort: active first, then idle, then completed, then error
-    const statusOrder = { active: 0, idle: 1, error: 2, completed: 3 };
+    // Sort: active first, then stuck, idle, error, completed
+    const statusOrder = { active: 0, stuck: 1, idle: 2, error: 3, completed: 4 };
     allSessions.sort((a, b) => {
-      const orderDiff = (statusOrder[a.status] ?? 4) - (statusOrder[b.status] ?? 4);
+      const orderDiff = (statusOrder[a.status] ?? 5) - (statusOrder[b.status] ?? 5);
       if (orderDiff !== 0) return orderDiff;
       // Within same status, sort by most recently active
       const aTime = a.lastTimestamp ? new Date(a.lastTimestamp).getTime() : 0;

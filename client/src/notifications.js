@@ -3,6 +3,7 @@
 const HOURGLASS_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏳</text></svg>";
 const ERROR_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔴</text></svg>";
 const DONE_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✅</text></svg>";
+const WARNING_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚠️</text></svg>";
 
 /**
  * Determine the notification to fire for a status transition.
@@ -22,6 +23,10 @@ export function getStatusNotification(session, oldStatus) {
   }
   if (status === "idle" && oldStatus === "active") {
     return { type: "idle", title: "Waiting for input", body: `${name} on ${host} may need attention`, icon: HOURGLASS_ICON };
+  }
+  if (status === "stuck") {
+    const stuckMinutes = Math.round(300_000 / 60_000); // matches STUCK_THRESHOLD_MS
+    return { type: "stuck", title: "Session may be stuck", body: `${name} on ${host} — no output for ${stuckMinutes}+ min`, icon: WARNING_ICON };
   }
   return null;
 }
