@@ -25,7 +25,8 @@ export function getStatusNotification(session, oldStatus) {
     return { type: "idle", title: "Waiting for input", body: `${name} on ${host} may need attention`, icon: HOURGLASS_ICON };
   }
   if (status === "stuck") {
-    return { type: "stuck", title: "Session may be stuck", body: `${name} on ${host} — no output for 5+ min`, icon: WARNING_ICON };
+    const stuckMinutes = Math.round(300_000 / 60_000); // matches STUCK_THRESHOLD_MS
+    return { type: "stuck", title: "Session may be stuck", body: `${name} on ${host} — no output for ${stuckMinutes}+ min`, icon: WARNING_ICON };
   }
   return null;
 }

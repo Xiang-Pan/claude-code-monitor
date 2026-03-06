@@ -56,6 +56,7 @@ export async function parseSessionFile(filepath) {
   let lastUserMessage = "";
   let lastAssistantMessage = "";
   let lastAssistantTimestamp = null;
+  let lastUserTimestamp = null;
   let hasError = false;
   let hasSummary = false;
   let model = null;
@@ -74,6 +75,7 @@ export async function parseSessionFile(filepath) {
     switch (entry.type) {
       case "user":
         userMessages++;
+        if (ts) lastUserTimestamp = ts;
         if (typeof entry.message?.content === "string") {
           lastUserMessage = entry.message.content;
         }
@@ -151,6 +153,7 @@ export async function parseSessionFile(filepath) {
     lastUserMessage: truncate(lastUserMessage, 200),
     lastAssistantMessage: truncate(lastAssistantMessage, 200),
     lastAssistantTimestamp,
+    lastUserTimestamp,
     hasError,
     hasSummary,
     model,
@@ -174,8 +177,19 @@ export function inferStatus(session) {
   if (ageMs < ACTIVE_THRESHOLD_MS) {
     // Session file is being updated, but check if assistant has gone silent
     if (session.lastAssistantTimestamp) {
-      const assistantAgeMs = Date.now() - new Date(session.lastAssistantTimestamp).getTime();
-      if (assistantAgeMs > STUCK_THRESHOLD_MS) return "stuck";
+      const assistantMs = new Date(session.lastAssistantTimestamp).getTime();
+      if (!Number.isFinite(assistantMs)) return "active";
+      const assistantAgeMs = Date.now() - assistantMs;
+      // Only flag stuck if assistant hasn't responded since the last user prompt
+      if (assistantAgeMs > STUCK_THRESHOLD_MS) {
+        const userMs = session.lastUserTimestamp
+          ? new Date(session.lastUserTimestamp).getTime()
+          : 0;
+        if (Number.isFinite(userMs) && userMs > assistantMs) {
+          // User sent a prompt after last assistant reply — assistant hasn't caught up
+          return "stuck";
+        }
+      }
     }
     return "active";
   }

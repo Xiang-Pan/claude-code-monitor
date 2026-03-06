@@ -54,10 +54,19 @@ describe("inferStatus", () => {
     expect(inferStatus({ lastTimestamp: ts })).toBe("completed");
   });
 
-  it("returns stuck when active but assistant is stale", () => {
+  it("returns stuck when active, assistant is stale, and user prompt is newer", () => {
     const recentTs = new Date(Date.now() - ACTIVE_THRESHOLD_MS / 2).toISOString();
     const staleAssistantTs = new Date(Date.now() - STUCK_THRESHOLD_MS - 1000).toISOString();
-    expect(inferStatus({ lastTimestamp: recentTs, lastAssistantTimestamp: staleAssistantTs })).toBe("stuck");
+    // User sent a prompt after the last assistant reply
+    const userTs = new Date(Date.now() - STUCK_THRESHOLD_MS + 60_000).toISOString();
+    expect(inferStatus({ lastTimestamp: recentTs, lastAssistantTimestamp: staleAssistantTs, lastUserTimestamp: userTs })).toBe("stuck");
+  });
+
+  it("returns active when assistant is stale but no user prompt after it", () => {
+    const recentTs = new Date(Date.now() - ACTIVE_THRESHOLD_MS / 2).toISOString();
+    const staleAssistantTs = new Date(Date.now() - STUCK_THRESHOLD_MS - 1000).toISOString();
+    // No lastUserTimestamp or user prompt is before assistant reply
+    expect(inferStatus({ lastTimestamp: recentTs, lastAssistantTimestamp: staleAssistantTs })).toBe("active");
   });
 
   it("returns active when active and assistant is recent", () => {
