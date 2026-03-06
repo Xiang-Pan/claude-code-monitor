@@ -19,6 +19,16 @@ import { collectTmuxLocal, collectTmuxSSH } from "./tmux-collector.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
+function readAppVersion() {
+  try {
+    const packagePath = path.join(ROOT, "package.json");
+    const parsed = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
+    return parsed.version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
 // ── Load config ─────────────────────────────────────────────
 function loadConfig() {
   const configPath = process.env.CCM_CONFIG || path.join(ROOT, "config.json");
@@ -66,6 +76,18 @@ async function main() {
   const config = loadConfig();
   const port = config.server?.port || 3456;
   const pollInterval = config.server?.pollIntervalMs || 3000;
+  const serverVersion = readAppVersion();
+  const clientVersionCounts = new Map();
+
+  const listConnectedClientVersions = () => [...clientVersionCounts.keys()];
+  const addClientVersion = (version) => {
+    clientVersionCounts.set(version, (clientVersionCounts.get(version) || 0) + 1);
+  };
+  const removeClientVersion = (version) => {
+    const count = clientVersionCounts.get(version) || 0;
+    if (count <= 1) clientVersionCounts.delete(version);
+    else clientVersionCounts.set(version, count - 1);
+  };
 
   console.log(`
   ⬡  Claude Code Monitor
@@ -81,6 +103,8 @@ async function main() {
 
   // ── Password auth ──────────────────────────────────────────
   const password = process.env.CCM_PASSWORD || config.server?.password || null;
+  const hookToken = process.env.CCM_HOOK_TOKEN || config.server?.hookToken || null;
+  const allowInsecureClientUpdates = process.env.CCM_ALLOW_INSECURE_CLIENT_UPDATES === "1" || config.server?.allowInsecureClientUpdates === true;
   const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
   const validSessions = new Map(); // token → expiresAt
 
@@ -207,20 +231,62 @@ document.getElementById("form").onsubmit = async (e) => {
   if (password) {
     console.log(`  Auth:     Password-protected`);
   }
+  if (!password) {
+    console.warn("[security] No dashboard password set. Set CCM_PASSWORD.");
+  }
+  if (!allowInsecureClientUpdates && (!clientTokens || clientTokens.length === 0)) {
+    console.warn("[security] clientTokens is empty while secure mode is enabled; /api/client-update will reject agents.");
+  }
+  if (!hookToken) {
+    console.warn("[security] No hook token set. /api/hook is unauthenticated (set CCM_HOOK_TOKEN).");
+  }
 
   // ── REST API ─────────────────────────────────────────────
   const aggregator = new Aggregator();
 
   app.get("/api/state", (req, res) => {
-    res.json(aggregator.getState());
+    res.json({
+      ...aggregator.getState(),
+      meta: {
+        serverVersion,
+        connectedClientVersions: listConnectedClientVersions(),
+      },
+    });
   });
 
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", uptime: process.uptime() });
+    res.json({ status: "ok", uptime: process.uptime(), serverVersion });
+  });
+
+  app.get("/api/version", (req, res) => {
+    res.json({
+      serverVersion,
+      connectedClientVersions: listConnectedClientVersions(),
+      connectedClients: [...clientVersionCounts.values()].reduce((a, b) => a + b, 0),
+    });
+  });
+
+  app.get("/api/metrics", (req, res) => {
+    const st = aggregator.getState();
+    const a = st.aggregate || {};
+    const lines = [
+      `ccm_sessions_total ${a.totalSessions || 0}`,
+      `ccm_sessions_active ${a.active || 0}`,
+      `ccm_sessions_idle ${a.idle || 0}`,
+      `ccm_sessions_completed ${a.completed || 0}`,
+      `ccm_sessions_errors ${a.errors || 0}`,
+      `ccm_tool_calls_total ${a.totalToolCalls || 0}`,
+      `ccm_tokens_input_total ${(a.totalTokens && a.totalTokens.input) || 0}`,
+      `ccm_tokens_output_total ${(a.totalTokens && a.totalTokens.output) || 0}`,
+      `ccm_tokens_cache_read_total ${(a.totalTokens && a.totalTokens.cacheRead) || 0}`,
+      `ccm_connected_clients ${[...clientVersionCounts.values()].reduce((x, y) => x + y, 0)}`,
+    ];
+    res.setHeader("Content-Type", "text/plain; version=0.0.4");
+    res.send(lines.join("\n") + "\n");
   });
 
   // ── Agent client tracking ─────────────────────────────────
-  const clientTokens = config.server?.clientTokens || null; // null = no auth required
+  const clientTokens = config.server?.clientTokens || []; // empty means disabled unless explicitly allowed
   const clientStaleMs = config.server?.clientStaleMs || 15_000;
   const agentClients = new Map(); // clientId → { lastSeen, online }
 
@@ -235,10 +301,10 @@ document.getElementById("form").onsubmit = async (e) => {
       return res.status(400).json({ error: "Missing clientId or hostData" });
     }
 
-    // Token auth (if configured)
-    if (clientTokens && clientTokens.length > 0) {
+    // Token auth (required by default)
+    if (!allowInsecureClientUpdates) {
       if (!token || !clientTokens.includes(token)) {
-        return res.status(401).json({ error: "Invalid token" });
+        return res.status(401).json({ error: "Invalid or missing client token" });
       }
     }
 
@@ -302,6 +368,13 @@ document.getElementById("form").onsubmit = async (e) => {
     }
 
     const payload = req.body || {};
+
+    if (hookToken) {
+      const supplied = req.headers["x-hook-token"] || req.headers["x-webhook-token"];
+      if (supplied !== hookToken) {
+        return res.status(401).json({ error: "Invalid hook token" });
+      }
+    }
     const event = payload.hook_event_name || "unknown";
     const sessionId = payload.session_id || null;
     const cwd = payload.cwd || null;
@@ -422,24 +495,32 @@ document.getElementById("form").onsubmit = async (e) => {
 
   // Poll SSH hosts on interval
   let pollSSH = null;
+  let sshPollInFlight = false;
+  let tmuxPollInFlight = false;
   if (sshHosts.length > 0) {
     pollSSH = async () => {
-      const results = await Promise.allSettled(
-        sshHosts.map(async (hostConfig) => {
-          const raw = await collectFromSSH(hostConfig);
-          console.log(`[ssh] ${hostConfig.name}: status=${raw.status}, sessions=${raw.sessions?.length || 0}${raw.error ? ', error=' + raw.error : ''}`);
-          const sessions = parseRemoteSessions(raw);
-          aggregator.update({
-            ...raw,
-            sessions,
-          });
-        })
-      );
+      if (sshPollInFlight) return;
+      sshPollInFlight = true;
+      try {
+        const results = await Promise.allSettled(
+          sshHosts.map(async (hostConfig) => {
+            const raw = await collectFromSSH(hostConfig);
+            console.log(`[ssh] ${hostConfig.name}: status=${raw.status}, sessions=${raw.sessions?.length || 0}${raw.error ? ', error=' + raw.error : ''}`);
+            const sessions = parseRemoteSessions(raw);
+            aggregator.update({
+              ...raw,
+              sessions,
+            });
+          })
+        );
 
-      for (const [i, result] of results.entries()) {
-        if (result.status === "rejected") {
-          console.error(`[ssh] Failed to poll ${sshHosts[i].name}:`, result.reason?.message);
+        for (const [i, result] of results.entries()) {
+          if (result.status === "rejected") {
+            console.error(`[ssh] Failed to poll ${sshHosts[i].name}:`, result.reason?.message);
+          }
         }
+      } finally {
+        sshPollInFlight = false;
       }
     };
 
@@ -451,17 +532,23 @@ document.getElementById("form").onsubmit = async (e) => {
 
   // ── Tmux status collection ─────────────────────────────
   const pollTmux = async () => {
-    const tmuxJobs = config.hosts.map(async (hostConfig) => {
-      try {
-        const data = hostConfig.mode === "ssh"
-          ? await collectTmuxSSH(hostConfig)
-          : await collectTmuxLocal(hostConfig.name);
-        aggregator.updateTmux(data);
-      } catch (err) {
-        console.error(`[tmux] Failed to collect from ${hostConfig.name}:`, err.message);
-      }
-    });
-    await Promise.allSettled(tmuxJobs);
+    if (tmuxPollInFlight) return;
+    tmuxPollInFlight = true;
+    try {
+      const tmuxJobs = config.hosts.map(async (hostConfig) => {
+        try {
+          const data = hostConfig.mode === "ssh"
+            ? await collectTmuxSSH(hostConfig)
+            : await collectTmuxLocal(hostConfig.name);
+          aggregator.updateTmux(data);
+        } catch (err) {
+          console.error(`[tmux] Failed to collect from ${hostConfig.name}:`, err.message);
+        }
+      });
+      await Promise.allSettled(tmuxJobs);
+    } finally {
+      tmuxPollInFlight = false;
+    }
   };
 
   // Initial tmux poll + recurring
@@ -477,10 +564,21 @@ document.getElementById("form").onsubmit = async (e) => {
       ws.close(4401, "Not authenticated");
       return;
     }
+    const wsUrl = new URL(req.url || "/ws", `http://${req.headers.host || "localhost"}`);
+    const clientVersion = (wsUrl.searchParams.get("clientVersion") || "").trim() || "unknown";
+    ws.clientVersion = clientVersion;
+    addClientVersion(clientVersion);
     console.log("[ws] Client connected");
 
     // Send current state immediately
-    const withMeta = (s) => ({ ...s, pollIntervalMs: pollInterval });
+    const withMeta = (s) => ({
+      ...s,
+      pollIntervalMs: pollInterval,
+      meta: {
+        serverVersion,
+        connectedClientVersions: listConnectedClientVersions(),
+      },
+    });
     ws.send(JSON.stringify({ type: "state", data: withMeta(aggregator.getState()) }));
 
     // Subscribe to updates
@@ -511,6 +609,9 @@ document.getElementById("form").onsubmit = async (e) => {
 
     ws.on("close", () => {
       console.log("[ws] Client disconnected");
+      if (ws.clientVersion) {
+        removeClientVersion(ws.clientVersion);
+      }
       unsub();
     });
 
