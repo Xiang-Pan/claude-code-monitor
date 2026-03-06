@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import { useChartData } from "../hooks/useChartData.js";
 import { ChartRenderer } from "./chartRenderer.js";
 import { C } from "./theme.js";
@@ -17,17 +17,6 @@ function hashColor(str) {
   return SESSION_COLORS[Math.abs(hash) % SESSION_COLORS.length];
 }
 
-const EVENT_ICONS = {
-  Notification: "\u{1f514}",
-  Stop: "\u2705",
-  SessionStart: "\u{1f680}",
-  SessionEnd: "\u{1f3c1}",
-  PreToolUse: "\u{1f527}",
-  PostToolUse: "\u2705",
-  UserPromptSubmit: "\u{1f4dd}",
-  SubagentStop: "\u{1f916}",
-};
-
 function formatGap(ms) {
   if (ms === 0) return "\u2014";
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -40,13 +29,11 @@ export function LivePulseChart({ hookEvents }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const rendererRef = useRef(null);
-  const animFrameRef = useRef(null);
-  const processedKeysRef = useRef(new Set());
+  const processedCountRef = useRef(0);
   const renderLoopRef = useRef(null);
 
   const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, text: "" });
   const [stats, setStats] = useState({ totalEvents: 0, sessionCount: 0, projectCount: 0, avgGap: 0 });
-  const [, forceUpdate] = useState(0);
 
   const {
     timeRange,
@@ -109,41 +96,58 @@ export function LivePulseChart({ hookEvents }) {
     });
     ro.observe(container);
 
-    // Render loop at 30 FPS
-    let lastTime = 0;
+    // Render loop at 30 FPS (canvas only)
+    let lastRenderTime = 0;
     const frameInterval = 1000 / 30;
     const loop = (now) => {
-      if (now - lastTime >= frameInterval) {
+      if (now - lastRenderTime >= frameInterval) {
         render();
-        setStats(getStats());
-        lastTime = now - ((now - lastTime) % frameInterval);
+        lastRenderTime = now - ((now - lastRenderTime) % frameInterval);
       }
       renderLoopRef.current = requestAnimationFrame(loop);
     };
     renderLoopRef.current = requestAnimationFrame(loop);
 
+    // Update stats at 1 Hz to avoid unnecessary React re-renders
+    const statsInterval = setInterval(() => {
+      setStats((prev) => {
+        const next = getStats();
+        if (
+          prev.totalEvents === next.totalEvents &&
+          prev.sessionCount === next.sessionCount &&
+          prev.projectCount === next.projectCount &&
+          prev.avgGap === next.avgGap
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    }, 1000);
+
     return () => {
       ro.disconnect();
       if (renderLoopRef.current) cancelAnimationFrame(renderLoopRef.current);
+      clearInterval(statsInterval);
     };
   }, [getDimensions, render, getStats]);
 
-  // Process new hook events
+  // Process new hook events (only newly prepended items)
   useEffect(() => {
     if (!hookEvents || hookEvents.length === 0) return;
 
-    hookEvents.forEach((ev) => {
-      const key = `${ev.event}:${ev.timestamp}:${ev.sessionId || ""}`;
-      if (processedKeysRef.current.has(key)) return;
-      processedKeysRef.current.add(key);
-      addEvent(ev);
-    });
-
-    // Trim processed keys to avoid memory leak
-    if (processedKeysRef.current.size > 500) {
-      const keys = [...processedKeysRef.current];
-      processedKeysRef.current = new Set(keys.slice(-300));
+    // hookEvents are prepended (newest first), so new items are at the front.
+    // Track how many we've already processed to avoid re-scanning.
+    const newCount = hookEvents.length - processedCountRef.current;
+    if (newCount <= 0) {
+      // Array shrunk (e.g. reset), reprocess all
+      processedCountRef.current = 0;
     }
+
+    const count = hookEvents.length - processedCountRef.current;
+    for (let i = 0; i < count; i++) {
+      addEvent(hookEvents[i]);
+    }
+    processedCountRef.current = hookEvents.length;
   }, [hookEvents, addEvent]);
 
   // Mouse tooltip

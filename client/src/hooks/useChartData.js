@@ -192,10 +192,19 @@ export function useChartData() {
 
   const changeTimeRange = useCallback(
     (newRange) => {
+      // Flush any pending debounced processing with the new range
+      if (debounceTimerRef.current !== null) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+        if (eventBufferRef.current.length > 0) {
+          processEventBuffer(newRange);
+        }
+      }
+
       setTimeRange(newRange);
       reaggregateData(newRange);
     },
-    [reaggregateData]
+    [reaggregateData, processEventBuffer]
   );
 
   const clearData = useCallback(() => {
