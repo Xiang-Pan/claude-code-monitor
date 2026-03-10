@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useMonitorSocket } from "./hooks/useMonitorSocket.js";
+import { useMonitorSocket, CLIENT_VERSION } from "./hooks/useMonitorSocket.js";
 import { usePersistedState } from "./hooks/usePersistedState.js";
 import { C } from "./components/theme.js";
 import { groupSessions, estimateCost, timeAgo } from "./components/helpers.js";
@@ -388,6 +388,8 @@ function Dashboard() {
 
   const data = demoMode ? demoData : state;
   const sessions = data?.sessions || [];
+  const serverVersion = data?.meta?.serverVersion || "unknown";
+  const versionMismatch = serverVersion !== "unknown" && CLIENT_VERSION !== serverVersion;
 
   const hostFiltered = hostFilter === "all" ? sessions : sessions.filter(s => s.host === hostFilter);
   const projectFolders = [...new Set(hostFiltered.map(s => s.project?.name).filter(Boolean))].sort();
@@ -455,6 +457,28 @@ function Dashboard() {
           </h1>
           <span style={{ fontSize: 11, color: C.textDim, fontFamily: "monospace" }}>
             {sessions.length} sessions
+          </span>
+          <span style={{
+            fontSize: 10,
+            color: versionMismatch ? C.red : C.textDim,
+            fontFamily: "'JetBrains Mono', monospace",
+            border: `1px solid ${versionMismatch ? C.red + "33" : C.border}`,
+            borderRadius: 6,
+            padding: "2px 6px",
+            backgroundColor: versionMismatch ? C.redDim : "transparent",
+          }}>
+            Server v{serverVersion}
+          </span>
+          <span style={{
+            fontSize: 10,
+            color: versionMismatch ? C.red : C.textDim,
+            fontFamily: "'JetBrains Mono', monospace",
+            border: `1px solid ${versionMismatch ? C.red + "33" : C.border}`,
+            borderRadius: 6,
+            padding: "2px 6px",
+            backgroundColor: versionMismatch ? C.redDim : "transparent",
+          }}>
+            Client v{CLIENT_VERSION}
           </span>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -844,11 +868,28 @@ function Dashboard() {
       {/* Footer */}
       <div style={{
         marginTop: 20, padding: "12px 0", borderTop: `1px solid ${C.border}`,
-        display: "flex", justifyContent: "space-between",
+        display: "flex", justifyContent: "space-between", alignItems: "center",
         fontSize: 10, color: C.textDim, fontFamily: "monospace",
       }}>
         <span>Data: ~/.claude/projects/**/*.jsonl + stats-cache.json</span>
-        <span>{data?.updatedAt ? `Updated: ${new Date(data.updatedAt).toLocaleTimeString()}` : ""}</span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            onClick={async () => {
+              try {
+                const res = await fetch("/api/install-command");
+                const { command } = await res.json();
+                await navigator.clipboard.writeText(command);
+                addToast("Copied", "Install command copied to clipboard");
+              } catch { addToast("Error", "Failed to copy install command", "#3b1a1a"); }
+            }}
+            style={{
+              padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.border}`,
+              backgroundColor: "transparent", color: C.textMuted, fontSize: 10,
+              fontFamily: "'JetBrains Mono', monospace", cursor: "pointer",
+            }}
+          >Copy Agent Install</button>
+          <span>{data?.updatedAt ? `Updated: ${new Date(data.updatedAt).toLocaleTimeString()}` : ""}</span>
+        </div>
       </div>
     </div>
   );

@@ -102,7 +102,40 @@ async function main() {
   const server = http.createServer(app);
 
   // ── Password auth ──────────────────────────────────────────
-  const password = process.env.CCM_PASSWORD || config.server?.password || null;
+  // Support hashed password: if value starts with "$scrypt$" it's a hash, otherwise plaintext (legacy)
+  const rawPassword = process.env.CCM_PASSWORD || config.server?.password || null;
+  let _passwordHash = null;
+  let _passwordPlain = null;
+  if (rawPassword && rawPassword.startsWith("$scrypt$")) {
+    _passwordHash = rawPassword;
+  } else if (rawPassword) {
+    _passwordPlain = rawPassword;
+    // Auto-hash on startup and warn
+    const salt = crypto.randomBytes(16);
+    const derived = crypto.scryptSync(rawPassword, salt, 64);
+    console.warn(`[security] Plaintext password detected. Replace with hashed value:`);
+    console.warn(`  "$scrypt$${salt.toString("hex")}$${derived.toString("hex")}"`);
+  }
+  const password = rawPassword; // truthy check only — actual comparison uses verifyPassword()
+
+  function verifyPassword(input) {
+    if (_passwordHash) {
+      const parts = _passwordHash.split("$"); // $scrypt$<salt_hex>$<hash_hex>
+      const salt = Buffer.from(parts[2], "hex");
+      const expected = Buffer.from(parts[3], "hex");
+      const derived = crypto.scryptSync(input, salt, 64);
+      return crypto.timingSafeEqual(derived, expected);
+    }
+    if (_passwordPlain) {
+      // Constant-time compare for plaintext (legacy)
+      const a = Buffer.from(input);
+      const b = Buffer.from(_passwordPlain);
+      if (a.length !== b.length) return false;
+      return crypto.timingSafeEqual(a, b);
+    }
+    return false;
+  }
+
   const hookToken = process.env.CCM_HOOK_TOKEN || config.server?.hookToken || null;
   const allowInsecureClientUpdates = process.env.CCM_ALLOW_INSECURE_CLIENT_UPDATES === "1" || config.server?.allowInsecureClientUpdates === true;
   const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -147,7 +180,7 @@ async function main() {
   app.post("/api/login", (req, res) => {
     if (!password) return res.json({ ok: true });
     const { password: pw } = req.body || {};
-    if (pw !== password) {
+    if (!pw || !verifyPassword(pw)) {
       return res.status(401).json({ error: "Wrong password" });
     }
     const token = createSessionToken();
@@ -234,7 +267,7 @@ document.getElementById("form").onsubmit = async (e) => {
   if (!password) {
     console.warn("[security] No dashboard password set. Set CCM_PASSWORD.");
   }
-  if (!allowInsecureClientUpdates && (!clientTokens || clientTokens.length === 0)) {
+  if (!allowInsecureClientUpdates && (!config.server?.clientTokens || config.server.clientTokens.length === 0)) {
     console.warn("[security] clientTokens is empty while secure mode is enabled; /api/client-update will reject agents.");
   }
   if (!hookToken) {
@@ -256,6 +289,26 @@ document.getElementById("form").onsubmit = async (e) => {
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", uptime: process.uptime(), serverVersion });
+  });
+
+  // ── One-time install tokens (10 min TTL, single use) ─────
+  const installTokens = new Map(); // token → expiresAt
+  const INSTALL_TOKEN_TTL = 10 * 60 * 1000; // 10 minutes
+
+  // Cleanup expired tokens every 5 minutes
+  setInterval(() => {
+    const now = Date.now();
+    for (const [t, exp] of installTokens) { if (exp <= now) installTokens.delete(t); }
+  }, 5 * 60_000);
+
+  // Generate install command with a fresh one-time token
+  app.get("/api/install-command", (req, res) => {
+    const proto = req.secure || (req.headers["x-forwarded-proto"] || "").includes("https") ? "https" : "http";
+    const serverUrl = `${proto}://${req.headers.host}`;
+    const token = crypto.randomBytes(16).toString("hex");
+    installTokens.set(token, Date.now() + INSTALL_TOKEN_TTL);
+    const cmd = `curl -sL https://raw.githubusercontent.com/Xiang-Pan/claude-code-monitor/master/install.sh | CCM_SERVER=${serverUrl} CCM_TOKEN=${token} bash`;
+    res.json({ command: cmd, expiresIn: "10 minutes" });
   });
 
   app.get("/api/version", (req, res) => {
@@ -286,7 +339,7 @@ document.getElementById("form").onsubmit = async (e) => {
   });
 
   // ── Agent client tracking ─────────────────────────────────
-  const clientTokens = config.server?.clientTokens || []; // empty means disabled unless explicitly allowed
+  const clientTokens = (process.env.CCM_CLIENT_TOKENS ? process.env.CCM_CLIENT_TOKENS.split(",") : null) || config.server?.clientTokens || [];
   const clientStaleMs = config.server?.clientStaleMs || 15_000;
   const agentClients = new Map(); // clientId → { lastSeen, online }
 
@@ -303,8 +356,20 @@ document.getElementById("form").onsubmit = async (e) => {
 
     // Token auth (required by default)
     if (!allowInsecureClientUpdates) {
-      if (!token || !clientTokens.includes(token)) {
+      if (!token) {
         return res.status(401).json({ error: "Invalid or missing client token" });
+      }
+      // Check permanent tokens first, then one-time install tokens
+      if (clientTokens.includes(token)) {
+        // OK — permanent token
+      } else if (installTokens.has(token) && installTokens.get(token) > Date.now()) {
+        // One-time token: consume it and promote to permanent
+        installTokens.delete(token);
+        clientTokens.push(token);
+        console.log(`[auth] One-time install token consumed and promoted for client ${clientId}`);
+      } else {
+        installTokens.delete(token); // clean up expired
+        return res.status(401).json({ error: "Invalid or expired client token" });
       }
     }
 

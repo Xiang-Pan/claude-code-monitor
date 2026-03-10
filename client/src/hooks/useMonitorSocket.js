@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+export const CLIENT_VERSION = typeof __CCM_CLIENT_VERSION__ !== "undefined" ? __CCM_CLIENT_VERSION__ : "dev";
+
 export function useMonitorSocket() {
   const [state, setState] = useState(null);
   const [connected, setConnected] = useState(false);
@@ -12,7 +14,7 @@ export function useMonitorSocket() {
   const connect = useCallback(() => {
     // Determine WebSocket URL based on current page location
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = `${protocol}//${window.location.host}/ws?clientVersion=${encodeURIComponent(CLIENT_VERSION)}`;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;

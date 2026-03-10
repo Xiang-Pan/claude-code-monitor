@@ -3,6 +3,7 @@
 #
 # Env vars:
 #   CCM_SERVER  — server URL (default: https://claude.xiangpan.org)
+#   CCM_TOKEN   — client token for authenticating with the server
 #   CCM_MODE    — "agent" (default, just push data) or "server" (run dashboard + agent)
 #   CCM_DIR     — install directory (default: ~/.claude-code-monitor)
 #   CCM_PORT    — server port when mode=server (default: 3456)
@@ -11,7 +12,8 @@ set -euo pipefail
 REPO="https://github.com/Xiang-Pan/claude-code-monitor.git"
 INSTALL_DIR="${CCM_DIR:-$HOME/.claude-code-monitor}"
 PORT="${CCM_PORT:-3456}"
-SERVER="${CCM_SERVER:-http://localhost:3456}"
+SERVER="${CCM_SERVER:-https://claude.xiangpan.org}"
+TOKEN="${CCM_TOKEN:-}"
 MODE="${CCM_MODE:-agent}"
 TMUX_SESSION="ccm"
 
@@ -126,14 +128,14 @@ if [ "$MODE" = "server" ]; then
   tmux new-session -d -s "$TMUX_SESSION" -n server \
     "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME server/index.js; read"
   tmux new-window -t "$TMUX_SESSION" -n agent \
-    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME agent/index.js --server \"http://localhost:$PORT\" --name \"$HOSTNAME\"; read"
+    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME agent/index.js --server \"http://localhost:$PORT\" --name \"$HOSTNAME\"${TOKEN:+ --token \"$TOKEN\"}; read"
 
   echo ""
   echo "  ✓ Dashboard: http://localhost:$PORT"
 else
   # Agent-only: just push data to remote server
   tmux new-session -d -s "$TMUX_SESSION" -n agent \
-    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME agent/index.js --server \"$SERVER\" --name \"$HOSTNAME\"; read"
+    "${TMUX_ENV}cd \"$INSTALL_DIR\" && $RUNTIME agent/index.js --server \"$SERVER\" --name \"$HOSTNAME\"${TOKEN:+ --token \"$TOKEN\"}; read"
 
   echo ""
   echo "  ✓ Pushing to: $SERVER"
