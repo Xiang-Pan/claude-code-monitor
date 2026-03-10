@@ -78,7 +78,10 @@ function _ttsPlayNext() {
   _ttsPlaying = true;
   const text = _ttsQueue.shift();
   let voice = "zh-CN-XiaoxiaoNeural";
-  try { const v = localStorage.getItem("ccm:ttsVoice"); if (v) voice = JSON.parse(v); } catch {}
+  try {
+    const v = localStorage.getItem("ccm:ttsVoice");
+    if (v) { const parsed = JSON.parse(v); if (typeof parsed === "string" && parsed.length) voice = parsed; }
+  } catch {}
   try {
     const audio = new Audio(`/api/tts?text=${encodeURIComponent(text.slice(0, 200))}&voice=${encodeURIComponent(voice)}`);
     audio.volume = 0.8;
@@ -252,7 +255,7 @@ function Dashboard() {
   const [hookTimeFilter, setHookTimeFilter] = usePersistedState("hookTimeFilter", "all");
   const [hookProjectFilter, setHookProjectFilter] = usePersistedState("hookProjectFilter", "all");
   const [hookPanelOpen, setHookPanelOpen] = usePersistedState("hookPanelOpen", true);
-  const [voiceTypes, setVoiceTypes] = usePersistedState("voiceTypes", ["completed", "error", "idle"]);
+  const [voiceTypes, setVoiceTypes] = usePersistedState("voiceTypes", ["completed", "error", "idle", "stuck"]);
   const [ttsVoice, setTtsVoice] = usePersistedState("ttsVoice", "zh-CN-XiaoxiaoNeural");
   const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
   const [demoMode, setDemoMode] = useState(false);
@@ -393,8 +396,9 @@ function Dashboard() {
   let filtered = hostFiltered;
   if (filter === "active") filtered = filtered.filter(s => s.status === "active");
   else if (filter === "idle") filtered = filtered.filter(s => s.status === "idle");
+  else if (filter === "stuck") filtered = filtered.filter(s => s.status === "stuck");
   else if (filter === "error") filtered = filtered.filter(s => s.status === "error");
-  else if (filter === "issues") filtered = filtered.filter(s => s.status === "error" || s.status === "idle");
+  else if (filter === "issues") filtered = filtered.filter(s => s.status === "error" || s.status === "idle" || s.status === "stuck");
   if (effectiveFolderFilter !== "all") {
     filtered = filtered.filter(s => s.project?.name === effectiveFolderFilter);
   }
@@ -419,6 +423,7 @@ function Dashboard() {
   const filterButtons = [
     { key: "all", label: "All", count: hostFiltered.length },
     { key: "active", label: "Active", count: hostFiltered.filter(s => s.status === "active").length },
+    { key: "stuck", label: "Stuck", count: hostFiltered.filter(s => s.status === "stuck").length },
     { key: "idle", label: "Idle", count: hostFiltered.filter(s => s.status === "idle").length },
     { key: "error", label: "Errors", count: hostFiltered.filter(s => s.status === "error").length },
   ];
@@ -491,9 +496,12 @@ function Dashboard() {
                   onChange={(e) => {
                     const v = e.target.value;
                     setTtsVoice(v);
+                    // Stop any previous preview before starting a new one
+                    if (window._voicePreviewAudio) { window._voicePreviewAudio.pause(); window._voicePreviewAudio = null; }
                     const sample = v.startsWith("zh") ? "你好，这是语音测试" : "Hello, this is a voice test";
                     const a = new Audio(`/api/tts?text=${encodeURIComponent(sample)}&voice=${encodeURIComponent(v)}`);
                     a.volume = 0.8;
+                    window._voicePreviewAudio = a;
                     a.play().catch(() => {});
                   }}
                   style={{
@@ -513,6 +521,7 @@ function Dashboard() {
                   { key: "completed", label: "Completed" },
                   { key: "error", label: "Error" },
                   { key: "idle", label: "Waiting for input" },
+                  { key: "stuck", label: "Session stuck" },
                   { key: "hook_stop", label: "Hook: Stop" },
                   { key: "hook_error", label: "Hook: Failure" },
                   { key: "hook_notify", label: "Hook: Notification" },
