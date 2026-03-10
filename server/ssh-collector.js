@@ -15,7 +15,8 @@ export async function collectFromSSH(hostConfig) {
   if (sshAlias) {
     sshArgs.push(sshAlias);
   } else {
-    sshArgs.push("-o", "StrictHostKeyChecking=accept-new");
+    const strictHostKeyChecking = hostConfig.strictHostKeyChecking || "yes";
+    sshArgs.push("-o", `StrictHostKeyChecking=${strictHostKeyChecking}`);
     if (port !== 22) sshArgs.push("-p", String(port));
     if (identityFile) sshArgs.push("-i", identityFile);
     sshArgs.push(`${user}@${host}`);

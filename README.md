@@ -45,7 +45,7 @@ If you run Claude Code across multiple remote machines (via SSH + tmux), keeping
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+ (LTS recommended)
 - SSH access to your remote hosts (key-based auth recommended)
 - Claude Code running in tmux sessions on remote hosts
 
@@ -209,6 +209,32 @@ CCM_PORT=3456              # Override server port
 CCM_CONFIG=./config.json   # Config file path
 CCM_POLL_INTERVAL=3000     # Poll interval in ms
 ```
+
+
+### Security hardening (recommended)
+
+Set credentials via environment variables (avoid committing secrets in `config.json`):
+
+```bash
+export CCM_PASSWORD="change-me-strong-password"
+export CCM_HOOK_TOKEN="random-long-hook-token"
+# keep secure default: agent updates require token
+export CCM_ALLOW_INSECURE_CLIENT_UPDATES=0
+```
+
+In `config.json`, set agent tokens:
+
+```jsonc
+{
+  "server": {
+    "clientTokens": ["agent-token-1", "agent-token-2"],
+    "hookToken": "same-or-different-hook-token",
+    "allowInsecureClientUpdates": false
+  }
+}
+```
+
+Then send hooks with header `X-Hook-Token: <token>`.
 
 ## Session Status Logic
 
