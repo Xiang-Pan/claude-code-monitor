@@ -100,7 +100,11 @@ fi
 
 # 3. Start in tmux
 echo "[3/3] Starting in tmux session '$TMUX_SESSION'..."
-tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  echo "  Replacing existing session '$TMUX_SESSION'..."
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  sleep 0.5
+fi
 
 HOSTNAME=$(hostname -s 2>/dev/null || hostname)
 
