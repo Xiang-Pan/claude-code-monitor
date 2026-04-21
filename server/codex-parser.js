@@ -6,10 +6,15 @@ import { inferStatus } from "./parser.js";
 /**
  * Parse a single Codex rollout JSONL file and return structured session info.
  *
- * Codex JSONL schema:
- *  - First line: { type: "session_meta", meta: { id, cwd, cli_version }, git: { branch } }
- *  - Subsequent: { type: "event_msg", payload: { type: "UserMessage"|"AgentMessage"|... }, ts }
- *  - Token events: { type: "event_msg", payload: { type: "TokenCount", input_tokens, output_tokens, cached_input_tokens, reasoning_tokens, model } }
+ * Codex JSONL schema (current format, cli ≥ 0.100):
+ *  - { type: "session_meta", timestamp, payload: { id, cwd, cli_version, ... } }
+ *  - { type: "event_msg", timestamp, payload: { type: "user_message"|"agent_message"|"token_count"|... } }
+ *  - { type: "response_item", timestamp, payload: { type: "function_call"|"message"|..., role? } }
+ *  - { type: "turn_context", timestamp, payload: { model, cwd, ... } }
+ *
+ * Legacy format (older cli):
+ *  - { type: "session_meta", meta: { id, cwd }, git: { branch } }
+ *  - { type: "event_msg", payload: { type: "UserMessage"|"AgentMessage"|"TokenCount"|... }, ts }
  */
 export async function parseCodexSessionFile(filepath) {
   const lines = [];
@@ -27,7 +32,7 @@ export async function parseCodexSessionFile(filepath) {
 
   if (lines.length === 0) return null;
 
-  // Extract session ID from filename: rollout-<uuid>.jsonl → <uuid>
+  // Extract session ID from filename: rollout-<uuid>.jsonl or rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl
   const basename = path.basename(filepath, ".jsonl");
   let sessionId = basename.startsWith("rollout-")
     ? basename.slice("rollout-".length)
@@ -51,17 +56,38 @@ export async function parseCodexSessionFile(filepath) {
   let cwd = null;
 
   for (const entry of lines) {
-    // Extract timestamp
-    const ts = entry.ts || entry.timestamp;
+    // Extract timestamp (current format uses "timestamp", legacy uses "ts")
+    const ts = entry.timestamp || entry.ts;
     if (ts) {
       if (!firstTimestamp) firstTimestamp = ts;
       lastTimestamp = ts;
     }
 
     if (entry.type === "session_meta") {
-      if (entry.meta?.cwd) cwd = entry.meta.cwd;
-      if (entry.meta?.id && !sessionId) sessionId = entry.meta.id;
+      // Current format: payload.cwd, payload.id
+      // Legacy format: meta.cwd, meta.id, git.branch
+      if (entry.payload?.cwd) cwd = entry.payload.cwd;
+      else if (entry.meta?.cwd) cwd = entry.meta.cwd;
+      if (!sessionId) {
+        if (entry.payload?.id) sessionId = entry.payload.id;
+        else if (entry.meta?.id) sessionId = entry.meta.id;
+      }
       if (entry.git?.branch) branch = entry.git.branch;
+      continue;
+    }
+
+    // Current format: turn_context carries model and cwd
+    if (entry.type === "turn_context" && entry.payload) {
+      if (entry.payload.model && !model) model = entry.payload.model;
+      if (entry.payload.cwd && !cwd) cwd = entry.payload.cwd;
+      continue;
+    }
+
+    // Current format: response_item carries tool calls
+    if (entry.type === "response_item" && entry.payload) {
+      if (entry.payload.type === "function_call") {
+        toolCalls++;
+      }
       continue;
     }
 
@@ -69,15 +95,29 @@ export async function parseCodexSessionFile(filepath) {
       const p = entry.payload;
 
       switch (p.type) {
+        // Current format (snake_case)
+        case "user_message":
+          userMessages++;
+          if (typeof p.message === "string") lastUserMessage = p.message;
+          break;
+
+        case "agent_message":
+          assistantMessages++;
+          if (typeof p.message === "string") lastAssistantMessage = p.message;
+          break;
+
+        case "turn_aborted":
+          hasError = true;
+          break;
+
+        // Legacy format (PascalCase)
         case "UserMessage":
           userMessages++;
           if (typeof p.content === "string") {
             lastUserMessage = p.content;
           } else if (Array.isArray(p.content)) {
             for (const block of p.content) {
-              if (block.type === "text" && block.text) {
-                lastUserMessage = block.text;
-              }
+              if (block.type === "text" && block.text) lastUserMessage = block.text;
             }
           }
           break;
@@ -88,9 +128,7 @@ export async function parseCodexSessionFile(filepath) {
             lastAssistantMessage = p.content;
           } else if (Array.isArray(p.content)) {
             for (const block of p.content) {
-              if (block.type === "text" && block.text) {
-                lastAssistantMessage = block.text;
-              }
+              if (block.type === "text" && block.text) lastAssistantMessage = block.text;
             }
           }
           break;
@@ -114,13 +152,12 @@ export async function parseCodexSessionFile(filepath) {
           break;
 
         case "ContextCompacted":
-          // Note: unlike Claude's "summary", Codex context compaction is a
-          // mid-session event (memory management) and does NOT indicate the
-          // session is finished, so we intentionally don't set hasSummary.
+          // Codex context compaction is a mid-session memory management event,
+          // NOT a session completion signal — intentionally not setting hasSummary.
           break;
       }
 
-      // Model from turn_context
+      // Legacy: model from turn_context embedded in payload
       if (p.turn_context?.model && !model) {
         model = p.turn_context.model;
       }
@@ -129,6 +166,7 @@ export async function parseCodexSessionFile(filepath) {
 
   return {
     sessionId,
+    tool: "codex",
     isAgent: false,
     messages: userMessages + assistantMessages,
     userMessages,
