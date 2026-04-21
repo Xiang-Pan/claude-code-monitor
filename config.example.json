@@ -26,6 +26,8 @@
     "pollIntervalMs": 3000,
     "password": "",
     "clientTokens": [],
-    "clientStaleMs": 15000
+    "clientStaleMs": 15000,
+    "hookToken": "",
+    "allowInsecureClientUpdates": false
   }
 }
