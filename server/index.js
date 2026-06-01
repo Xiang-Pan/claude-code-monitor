@@ -9,12 +9,17 @@ import { fileURLToPath } from "url";
 import express from "express";
 import { WebSocketServer } from "ws";
 import http from "http";
+import https from "https";
+import pty from "node-pty";
 
 import { Aggregator } from "./aggregator.js";
 import { createWatcher } from "./watcher.js";
 import { createCodexWatcher } from "./codex-watcher.js";
 import { collectFromSSH, parseRemoteSessions } from "./ssh-collector.js";
 import { collectTmuxLocal, collectTmuxSSH } from "./tmux-collector.js";
+import { SSHPool } from "./ssh-pool.js";
+import { resume, fork, close } from "./actions.js";
+import { searchTranscripts, searchTranscriptsSSH } from "./search.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -77,7 +82,54 @@ async function main() {
 
   // ── Express app ──────────────────────────────────────────
   const app = express();
-  const server = http.createServer(app);
+
+  // ── TLS / HTTPS support ─────────────────────────────────
+  // Config: server.tls.cert / server.tls.key (file paths)
+  // Or env: CCM_TLS_CERT / CCM_TLS_KEY
+  // If no cert provided, auto-generates a self-signed cert
+  const tlsConfig = config.server?.tls || {};
+  const tlsCert = process.env.CCM_TLS_CERT || tlsConfig.cert || null;
+  const tlsKey = process.env.CCM_TLS_KEY || tlsConfig.key || null;
+  const enableHttps = !!(process.env.CCM_HTTPS || tlsConfig.enabled || tlsCert);
+
+  let server;
+  if (enableHttps) {
+    let certPem, keyPem;
+    if (tlsCert && tlsKey) {
+      certPem = fs.readFileSync(path.resolve(ROOT, tlsCert));
+      keyPem = fs.readFileSync(path.resolve(ROOT, tlsKey));
+      console.log(`  TLS:      Using ${tlsCert}`);
+    } else {
+      // Auto-generate self-signed cert
+      const certDir = path.join(ROOT, ".certs");
+      const certPath = path.join(certDir, "server.crt");
+      const keyPath = path.join(certDir, "server.key");
+      if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+        certPem = fs.readFileSync(certPath);
+        keyPem = fs.readFileSync(keyPath);
+        console.log("  TLS:      Using existing self-signed cert (.certs/)");
+      } else {
+        // Generate with openssl
+        fs.mkdirSync(certDir, { recursive: true });
+        const { execFileSync } = await import("child_process");
+        execFileSync("openssl", [
+          "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+          "-keyout", keyPath, "-out", certPath,
+          "-days", "365", "-subj", "/CN=localhost",
+          "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ]);
+        certPem = fs.readFileSync(certPath);
+        keyPem = fs.readFileSync(keyPath);
+        console.log("  TLS:      Generated self-signed cert (.certs/)");
+      }
+    }
+    server = https.createServer({ cert: certPem, key: keyPem }, app);
+  } else {
+    server = http.createServer(app);
+  }
+
+  const proto = enableHttps ? "https" : "http";
+  const wsProto = enableHttps ? "wss" : "ws";
 
   // ── Password auth ──────────────────────────────────────────
   const password = process.env.CCM_PASSWORD || config.server?.password || null;
@@ -328,6 +380,79 @@ document.getElementById("form").onsubmit = async (e) => {
     res.json({ ok: true });
   });
 
+  // ── SSH-capable hosts ────────────────────────────────────
+  app.get("/api/ssh-hosts", (req, res) => {
+    const sshHosts = config.hosts
+      .filter((h) => h.ssh)
+      .map((h) => ({ name: h.name, alias: h.ssh?.alias || h.name }));
+    res.json({ hosts: sshHosts });
+  });
+
+  // ── SSH Connection Pool ──────────────────────────────────
+  const sshPool = new SSHPool();
+
+  app.get("/api/ssh-pool", (req, res) => {
+    res.json({ pool: sshPool.getStatus() });
+  });
+
+  // ── Session actions (resume / fork / close) ───────────────
+  const ACTION_MAP = { resume, fork, close };
+
+  app.use("/api/actions", express.json());
+
+  for (const [action, handler] of Object.entries(ACTION_MAP)) {
+    app.post(`/api/actions/${action}`, async (req, res) => {
+      const { sessionId, host } = req.body || {};
+      if (!sessionId) {
+        return res.status(400).json({ ok: false, error: "Missing sessionId" });
+      }
+
+      const hostConfig = host
+        ? config.hosts.find((h) => h.name === host) || null
+        : null;
+
+      try {
+        const result = await handler(sessionId, hostConfig);
+        console.log(`[action] ${action} ${sessionId.slice(0, 8)} on ${host || "local"}: ${result.ok ? "ok" : result.error}`);
+        res.json(result);
+      } catch (err) {
+        console.error(`[action] ${action} error:`, err.message);
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+  }
+
+  // ── Short-lived WebSocket tokens (for ssh terminal auth) ─
+  const wsTokens = new Map(); // token → expiresAt
+  const WS_TOKEN_TTL_MS = 60_000; // 60s one-time use
+
+  function createWsToken() {
+    const token = crypto.randomBytes(16).toString("hex");
+    wsTokens.set(token, Date.now() + WS_TOKEN_TTL_MS);
+    return token;
+  }
+
+  function validateWsToken(token) {
+    if (!token) return false;
+    const expiresAt = wsTokens.get(token);
+    if (!expiresAt) return false;
+    wsTokens.delete(token); // one-time use
+    if (expiresAt <= Date.now()) return false;
+    return true;
+  }
+
+  // Prune expired ws tokens every minute
+  setInterval(() => {
+    const now = Date.now();
+    for (const [token, exp] of wsTokens) { if (exp <= now) wsTokens.delete(token); }
+  }, 60_000);
+
+  // Endpoint: get a short-lived token for WebSocket auth (requires session cookie)
+  app.get("/api/ssh-token", (req, res) => {
+    if (!isAuthenticated(req)) return res.status(401).json({ error: "Not authenticated" });
+    res.json({ token: createWsToken() });
+  });
+
   // ── TTS endpoint — Edge TTS via CLI ─────────────────────
   app.get("/api/tts", (req, res) => {
     const text = (req.query.text || "").slice(0, 200);
@@ -348,6 +473,93 @@ document.getElementById("form").onsubmit = async (e) => {
     });
   });
 
+  // ── Serve agent files (for install-agent.sh) ─────────────
+  // Exposes agent/ and server/ source files so remote machines can self-install
+  const AGENT_ALLOWED = new Set([
+    "agent/index.js",
+    "agent/package.json",
+    "server/watcher.js",
+    "server/parser.js",
+    "server/codex-watcher.js",
+    "server/codex-parser.js",
+    "server/constants.js",
+    "scripts/install-agent.sh",
+  ]);
+
+  app.get("/agent-files/:dir/:file", (req, res) => {
+    const rel = `${req.params.dir}/${req.params.file}`;
+    if (!AGENT_ALLOWED.has(rel)) return res.status(404).end();
+    const filePath = path.join(ROOT, rel);
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.sendFile(filePath);
+  });
+
+  // Serve install-agent.sh directly at /install-agent.sh
+  app.get("/install-agent.sh", (req, res) => {
+    const filePath = path.join(ROOT, "scripts", "install-agent.sh");
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.sendFile(filePath);
+  });
+
+  // ── Search endpoint — ripgrep across JSONL transcripts ────
+  app.get("/api/search", async (req, res) => {
+    const q = (req.query.q || "").trim();
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+
+    if (q.length < 2) {
+      return res.status(400).json({ error: "Query must be at least 2 characters" });
+    }
+    if (q.length > 200) {
+      return res.status(400).json({ error: "Query must be at most 200 characters" });
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const localResults = [];
+      const remoteResults = [];
+
+      for (const hostConfig of config.hosts) {
+        if (hostConfig.mode === "ssh") {
+          remoteResults.push(
+            searchTranscriptsSSH(q, hostConfig, { limit })
+              .then((r) => ({ host: hostConfig.name, ...r }))
+              .catch(() => ({ host: hostConfig.name, sessions: [], total: 0 }))
+          );
+        } else if (hostConfig.mode !== "agent" && hostConfig.tool !== "codex") {
+          const claudeDir = expandHome(hostConfig.claudeDir || "~/.claude");
+          localResults.push(
+            searchTranscripts(q, { claudeDir, limit })
+              .then((r) => ({ host: hostConfig.name, ...r }))
+              .catch(() => ({ host: hostConfig.name, sessions: [], total: 0 }))
+          );
+        }
+      }
+
+      const allResults = await Promise.all([...localResults, ...remoteResults]);
+
+      const merged = [];
+      let total = 0;
+      for (const result of allResults) {
+        total += result.total;
+        for (const session of result.sessions) {
+          session.host = session.host || result.host;
+          merged.push(session);
+        }
+      }
+
+      merged.sort((a, b) => b.matchCount - a.matchCount);
+
+      const took = Date.now() - startTime;
+      res.json({ results: merged.slice(0, limit), total, took });
+    } catch (err) {
+      console.error("[search] Error:", err.message);
+      res.status(500).json({ error: "Search failed" });
+    }
+  });
+
   // Serve the built client (production) or proxy to Vite (dev)
   const clientDist = path.join(ROOT, "client", "dist");
   if (fs.existsSync(clientDist)) {
@@ -361,11 +573,50 @@ document.getElementById("form").onsubmit = async (e) => {
         <html><body style="background:#0a0c10;color:#c8cdd8;font-family:monospace;padding:40px">
           <h2>⬡ Claude Code Monitor</h2>
           <p>Client not built yet. Run <code>npm run build</code> or use <code>npm run dev</code> for development.</p>
-          <p>WebSocket endpoint available at <code>ws://localhost:${port}/ws</code></p>
+          <p>WebSocket endpoint available at <code>${wsProto}://localhost:${port}/ws</code></p>
           <p style="margin-top:20px;color:#6b7280">Or run <code>npm run dev</code> to start both server + Vite dev server.</p>
         </body></html>
       `);
     });
+  }
+
+  // ── Start SSH connection pool ─────────────────────────────
+  // Explicit pool host list from config.server.sshPool.hosts, or fall back to all hosts with ssh config
+  const poolConfig = config.server?.sshPool || {};
+  const poolEnabled = poolConfig.enabled !== false;
+  const allSshHosts = config.hosts.filter((h) => h.ssh);
+
+  let poolHosts;
+  if (poolConfig.hosts && Array.isArray(poolConfig.hosts)) {
+    // Explicit list: only connect to named hosts
+    const poolSet = new Set(poolConfig.hosts);
+    poolHosts = allSshHosts.filter((h) => poolSet.has(h.name));
+    const missing = poolConfig.hosts.filter((n) => !allSshHosts.find((h) => h.name === n));
+    if (missing.length > 0) {
+      console.warn(`[ssh-pool] Hosts not found in config: ${missing.join(", ")}`);
+    }
+  } else {
+    poolHosts = allSshHosts;
+  }
+
+  if (poolEnabled && poolHosts.length > 0) {
+    // Inject ControlPath into ALL ssh host configs (not just pool hosts)
+    // so collectors and WebSSH can reuse any active master
+    const controlPath = sshPool.getControlPath();
+    for (const h of allSshHosts) {
+      h._controlPath = controlPath;
+    }
+    // Subscribe pool status changes to aggregator
+    sshPool.onStatusChange((status) => {
+      aggregator.updateSSHPool(status);
+    });
+    // Start pool (non-blocking — connections establish in background)
+    console.log(`[ssh-pool] Pool hosts: ${poolHosts.map((h) => h.name).join(", ")}`);
+    sshPool.start(poolHosts).catch((err) => {
+      console.error("[ssh-pool] Start error:", err.message);
+    });
+  } else if (!poolEnabled) {
+    console.log("[ssh-pool] Disabled by config");
   }
 
   // ── Start watchers and collectors ────────────────────────
@@ -377,6 +628,17 @@ document.getElementById("form").onsubmit = async (e) => {
       sshHosts.push(hostConfig);
       const target = hostConfig.sshAlias || `${hostConfig.user}@${hostConfig.host}`;
       console.log(`[ssh] Will poll ${hostConfig.name} (${target})`);
+    } else if (hostConfig.mode === "agent") {
+      // Agent mode: data arrives via /api/client-update push or SSH pool
+      // No local watcher needed — just register host with empty state
+      console.log(`[agent] ${hostConfig.name} (push mode, no local watcher)`);
+      aggregator.update({
+        host: hostConfig.name,
+        status: "waiting",
+        sessions: [],
+        statsCache: null,
+        collectedAt: Date.now(),
+      });
     } else if (hostConfig.tool === "codex") {
       // Local Codex mode
       const codexDir = expandHome(hostConfig.codexDir || "~/.codex");
@@ -469,7 +731,7 @@ document.getElementById("form").onsubmit = async (e) => {
   setInterval(pollTmux, pollInterval);
 
   // ── WebSocket ────────────────────────────────────────────
-  const wss = new WebSocketServer({ server, path: "/ws" });
+  const wss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws, req) => {
     // Verify auth for WebSocket connections
@@ -520,17 +782,148 @@ document.getElementById("form").onsubmit = async (e) => {
     });
   });
 
+  // ── WebSSH WebSocket handler (node-pty + ssh binary) ────
+  // Uses ~/.ssh/config natively — supports ProxyJump, aliases, certs, etc.
+  const wssSsh = new WebSocketServer({ noServer: true });
+
+  wssSsh.on("connection", (ws, req, hostConfig) => {
+    const sshAlias = hostConfig.ssh?.alias || hostConfig.name;
+    const qs = new URL(req.url, "http://localhost").searchParams;
+    const fixMode = qs.get("fix") === "1";
+    const tmuxCmd = fixMode ? null : (qs.get("cmd") || hostConfig.ssh?.command || "tmux new-session -A -s main");
+    console.log(`[ws-ssh] Spawning ssh ${sshAlias}${fixMode ? " (fix mode — no ControlMaster, interactive)" : ""}`);
+
+    let cols = 220, rows = 50;
+    const sshArgs = ["-tt"]; // force TTY allocation
+    if (fixMode) {
+      // Fix mode: no ControlMaster, longer timeout, allow interactive auth
+      sshArgs.push("-o", "ConnectTimeout=60");
+    } else if (hostConfig._controlPath) {
+      // Reuse persistent ControlMaster connection if available
+      sshArgs.push("-o", `ControlPath=${hostConfig._controlPath}`);
+    }
+    sshArgs.push(sshAlias);
+    if (tmuxCmd) sshArgs.push(tmuxCmd);
+    const proc = pty.spawn("ssh", sshArgs, {
+      name: "xterm-256color",
+      cols,
+      rows,
+      env: { ...process.env, TERM: "xterm-256color" },
+    });
+
+    // Track password prompt state
+    let awaitingPassword = false;
+    let outputBuf = "";
+    const PASSWORD_RE = /[Pp]assword[^:]*:\s*$|[Pp]assphrase[^:]*:\s*$/;
+
+    // PTY → WebSocket: send as binary so client can distinguish from JSON text control msgs
+    proc.onData((data) => {
+      if (ws.readyState !== ws.OPEN) return;
+
+      // Accumulate recent output to detect password prompts
+      outputBuf += data;
+      if (outputBuf.length > 512) outputBuf = outputBuf.slice(-512);
+
+      // Send terminal bytes as binary frame
+      ws.send(Buffer.from(data));
+
+      // Detect SSH password/passphrase prompt and signal the client
+      if (!awaitingPassword && PASSWORD_RE.test(outputBuf.trimEnd())) {
+        awaitingPassword = true;
+        ws.send(JSON.stringify({ type: "password-prompt" }));
+      }
+    });
+
+    proc.onExit(({ exitCode }) => {
+      console.log(`[ws-ssh] ssh exited (${exitCode}) for ${sshAlias}`);
+      if (ws.readyState === ws.OPEN) ws.close();
+    });
+
+    // WebSocket → PTY
+    ws.on("message", (data) => {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.type === "resize") {
+          cols = msg.cols; rows = msg.rows;
+          proc.resize(cols, rows);
+        } else if (msg.type === "password-input") {
+          awaitingPassword = false;
+          outputBuf = "";
+          proc.write((msg.value || "") + "\r");
+        }
+      } catch {
+        proc.write(typeof data === "string" ? data : data.toString());
+      }
+    });
+
+    ws.on("close", () => {
+      console.log(`[ws-ssh] WebSocket closed for ${sshAlias}`);
+      try { proc.kill(); } catch {}
+    });
+
+    ws.on("error", (err) => {
+      console.error(`[ws-ssh] WebSocket error for ${sshAlias}:`, err.message);
+      try { proc.kill(); } catch {}
+    });
+  });
+
+  // ── Handle HTTP upgrade for both /ws and /ws/ssh/:hostId ─
+  server.on("upgrade", (req, socket, head) => {
+    const url = req.url || "";
+
+    // Check for /ws/ssh/:hostId first (more specific)
+    const sshMatch = url.match(/^\/ws\/ssh\/([^/?]+)/);
+    if (sshMatch) {
+      const hostId = decodeURIComponent(sshMatch[1]);
+
+      // Auth check: accept cookie OR short-lived ?token= query param
+      const qs = new URL(url, "http://localhost").searchParams;
+      const wsToken = qs.get("token");
+      const authed = isAuthenticatedWs(req) || validateWsToken(wsToken);
+      if (!authed) {
+        console.log(`[ws-ssh] Auth failed for ${hostId} (no valid cookie or token)`);
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      // Find host config
+      const hostConfig = config.hosts.find(
+        (h) => h.name === hostId && h.ssh
+      );
+      if (!hostConfig) {
+        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      wssSsh.handleUpgrade(req, socket, head, (ws) => {
+        wssSsh.emit("connection", ws, req, hostConfig);
+      });
+      return;
+    }
+
+    // Default /ws handler is handled by wss (path: "/ws" matches automatically)
+    // but since we're taking over the upgrade event, we need to forward it
+    if (url === "/ws" || url.startsWith("/ws?")) {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    }
+  });
+
   // ── Start server ─────────────────────────────────────────
   server.listen(port, () => {
-    console.log(`[server] Listening on http://localhost:${port}`);
-    console.log(`[server] WebSocket at ws://localhost:${port}/ws`);
+    console.log(`[server] Listening on ${proto}://localhost:${port}`);
+    console.log(`[server] WebSocket at ${wsProto}://localhost:${port}/ws`);
     console.log("");
   });
 
   // Graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
     console.log("\n[server] Shutting down...");
     for (const w of watchers) w.close();
+    await sshPool.stop();
     wss.close();
     server.close();
     process.exit(0);

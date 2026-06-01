@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
-import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS, STUCK_THRESHOLD_MS } from "./constants.js";
+import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS, STUCK_THRESHOLD_MS, CLOSEABLE_THRESHOLD_MS } from "./constants.js";
 
 /**
  * Decode a Claude Code project directory name back to a filesystem path.
@@ -62,6 +62,14 @@ export async function parseSessionFile(filepath) {
   let model = null;
   let branch = null;
   let cwd = null;
+  let stopReason = null;
+  let lastToolUse = null;
+  let permissionPending = false;
+
+  // Track background tasks: tool_use IDs for Bash(run_in_background) and Monitor
+  // that haven't received a matching tool_result yet
+  const pendingToolUseIds = new Set();   // all tool_use IDs awaiting result
+  const backgroundToolIds = new Set();   // subset that are background tasks
 
   for (const entry of lines) {
     // Extract cwd (working directory) from session data
@@ -79,20 +87,57 @@ export async function parseSessionFile(filepath) {
         if (typeof entry.message?.content === "string") {
           lastUserMessage = entry.message.content;
         }
+        // Match tool_result entries to clear pending tool_use IDs
+        if (entry.message?.content && Array.isArray(entry.message.content)) {
+          for (const block of entry.message.content) {
+            if (block.type === "tool_result" && block.tool_use_id) {
+              pendingToolUseIds.delete(block.tool_use_id);
+              backgroundToolIds.delete(block.tool_use_id);
+              // A tool result arriving clears the permission pending state
+              permissionPending = false;
+            }
+          }
+        }
+        // Also handle toolUseResult (Claude Code JSONL format)
+        if (entry.toolUseResult && entry.toolUseResult.tool_use_id) {
+          pendingToolUseIds.delete(entry.toolUseResult.tool_use_id);
+          backgroundToolIds.delete(entry.toolUseResult.tool_use_id);
+          permissionPending = false;
+        }
         break;
 
       case "assistant":
         assistantMessages++;
         if (ts) lastAssistantTimestamp = ts;
+        // Extract stop_reason
+        if (entry.message?.stop_reason) {
+          stopReason = entry.message.stop_reason;
+        }
         if (entry.message?.content) {
           const content = entry.message.content;
           if (Array.isArray(content)) {
+            lastToolUse = null; // reset per assistant message
             for (const block of content) {
               if (block.type === "text") {
                 lastAssistantMessage = block.text;
               }
               if (block.type === "tool_use") {
                 toolCalls++;
+                lastToolUse = block.name || null;
+                // Track tool_use IDs
+                if (block.id) {
+                  pendingToolUseIds.add(block.id);
+                  // Detect background tasks: Bash with run_in_background or Monitor tool
+                  const isBgBash = block.name === "Bash" && block.input?.run_in_background === true;
+                  const isMonitor = block.name === "Monitor";
+                  if (isBgBash || isMonitor) {
+                    backgroundToolIds.add(block.id);
+                  }
+                }
+                // Detect permission/ask prompts
+                if (block.name && /ask/i.test(block.name)) {
+                  permissionPending = true;
+                }
               }
             }
           } else if (typeof content === "string") {
@@ -159,20 +204,39 @@ export async function parseSessionFile(filepath) {
     model,
     branch,
     cwd,
+    stopReason,
+    lastToolUse,
+    backgroundTasks: backgroundToolIds.size,
+    permissionPending,
   };
 }
 
 /**
  * Determine session status based on timestamps and content.
+ *
+ * Status priority: error > waiting > stuck > active > idle > completed > closeable
  */
 export function inferStatus(session) {
   if (session.hasError) return "error";
-  if (session.hasSummary) return "completed";
+  if (session.hasSummary) {
+    // Completed session — check if old enough to be closeable
+    if (session.lastTimestamp) {
+      const ageMs = Date.now() - new Date(session.lastTimestamp).getTime();
+      if (ageMs > CLOSEABLE_THRESHOLD_MS) return "closeable";
+    }
+    return "completed";
+  }
 
   if (!session.lastTimestamp) return "completed";
 
   const lastActiveMs = new Date(session.lastTimestamp).getTime();
   const ageMs = Date.now() - lastActiveMs;
+
+  // Check for "waiting" — assistant finished its turn and is waiting for user input
+  if (session.permissionPending) return "waiting";
+  if (session.stopReason === "end_turn" && session.lastToolUse && /ask/i.test(session.lastToolUse)) {
+    return "waiting";
+  }
 
   if (ageMs < ACTIVE_THRESHOLD_MS) {
     // Session file is being updated, but check if assistant has gone silent
@@ -186,14 +250,28 @@ export function inferStatus(session) {
           ? new Date(session.lastUserTimestamp).getTime()
           : 0;
         if (Number.isFinite(userMs) && userMs > assistantMs) {
-          // User sent a prompt after last assistant reply — assistant hasn't caught up
           return "stuck";
         }
       }
     }
     return "active";
   }
+
+  // Check for "stuck" — tool_use sent but no result came back and idle > 5 min
+  if (session.stopReason === "tool_use" && ageMs > STUCK_THRESHOLD_MS) {
+    return "stuck";
+  }
+
+  // Sessions with running background tasks stay active even if idle
+  if (session.backgroundTasks > 0 && ageMs < IDLE_THRESHOLD_MS) {
+    return "active";
+  }
+
   if (ageMs < IDLE_THRESHOLD_MS) return "idle";
+
+  // Completed — check if old enough to be closeable
+  if (ageMs > CLOSEABLE_THRESHOLD_MS) return "closeable";
+
   return "completed";
 }
 

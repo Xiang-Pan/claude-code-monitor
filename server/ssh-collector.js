@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS } from "./constants.js";
+import { ACTIVE_THRESHOLD_MS, IDLE_THRESHOLD_MS, STUCK_THRESHOLD_MS, CLOSEABLE_THRESHOLD_MS } from "./constants.js";
 
 /**
  * Collect session data from a remote host via SSH.
@@ -11,6 +11,11 @@ export async function collectFromSSH(hostConfig) {
     "-o", "ConnectTimeout=10",
     "-o", "BatchMode=yes",
   ];
+
+  // Reuse persistent ControlMaster connection if available
+  if (hostConfig._controlPath) {
+    sshArgs.push("-o", `ControlPath=${hostConfig._controlPath}`);
+  }
 
   if (sshAlias) {
     sshArgs.push(sshAlias);
@@ -87,6 +92,11 @@ if os.path.isdir(PROJECTS_DIR):
             tokens_cache = 0
             has_error = False
             total_lines = 0
+            stop_reason = ""
+            last_tool_use = ""
+            permission_pending = False
+            pending_tool_ids = set()
+            bg_tool_ids = set()
 
             try:
                 with open(fpath, "r") as f:
@@ -124,18 +134,34 @@ if os.path.isdir(PROJECTS_DIR):
                                         if isinstance(b, dict) and b.get("type") == "text":
                                             last_user_msg = b.get("text", "")[:300]
                                             break
+                                    # Match tool_result to clear pending tool IDs
+                                    for b in content:
+                                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                                            tid = b.get("tool_use_id", "")
+                                            pending_tool_ids.discard(tid)
+                                            bg_tool_ids.discard(tid)
+                                            permission_pending = False
+                            if tr and isinstance(tr, dict):
+                                tid = tr.get("tool_use_id", "")
+                                if tid:
+                                    pending_tool_ids.discard(tid)
+                                    bg_tool_ids.discard(tid)
+                                    permission_pending = False
 
                         elif msg_type == "assistant":
                             assistant_msgs += 1
                             msg = d.get("message", {})
                             if msg.get("model"):
                                 model = msg["model"]
+                            if msg.get("stop_reason"):
+                                stop_reason = msg["stop_reason"]
                             usage = msg.get("usage", {})
                             if usage:
                                 tokens_in += usage.get("input_tokens", 0)
                                 tokens_out += usage.get("output_tokens", 0)
                                 tokens_cache += usage.get("cache_read_input_tokens", 0)
                             content = msg.get("content", [])
+                            last_tool_use = ""
                             if isinstance(content, list):
                                 for b in content:
                                     if isinstance(b, dict):
@@ -143,6 +169,17 @@ if os.path.isdir(PROJECTS_DIR):
                                             last_assistant_msg = b["text"][:300]
                                         if b.get("type") == "tool_use":
                                             tool_calls += 1
+                                            tname = b.get("name", "")
+                                            last_tool_use = tname
+                                            tid = b.get("id", "")
+                                            if tid:
+                                                pending_tool_ids.add(tid)
+                                                is_bg = (tname == "Bash" and b.get("input", {}).get("run_in_background") is True)
+                                                is_mon = tname == "Monitor"
+                                                if is_bg or is_mon:
+                                                    bg_tool_ids.add(tid)
+                                            if tname and "ask" in tname.lower():
+                                                permission_pending = True
 
                         if msg_type == "error" or d.get("error"):
                             has_error = True
@@ -175,6 +212,10 @@ if os.path.isdir(PROJECTS_DIR):
                 "hasError": has_error,
                 "fileSize": st.st_size,
                 "mtime": int(st.st_mtime),
+                "stopReason": stop_reason,
+                "lastToolUse": last_tool_use,
+                "backgroundTasks": len(bg_tool_ids),
+                "permissionPending": permission_pending,
             })
 
 print(json.dumps({"statsCache": stats, "sessions": sessions}))
@@ -267,16 +308,30 @@ export function parseRemoteSessions(remoteData) {
       ? realPath.split("/").filter(Boolean).pop()
       : s.projectDir.replace(/^-/, "").split("-").pop();
 
-    // Infer status
+    // Build a session-like object with the new fields so we can reuse inferStatus logic
     const effectiveLastActive = s.lastTimestamp
       ? new Date(s.lastTimestamp).getTime()
       : s.mtime * 1000;
     const ageMs = Date.now() - effectiveLastActive;
 
     let status = "completed";
-    if (s.hasError) status = "error";
-    else if (ageMs < ACTIVE_THRESHOLD_MS) status = "active";
-    else if (ageMs < IDLE_THRESHOLD_MS) status = "idle";
+    if (s.hasError) {
+      status = "error";
+    } else if (s.permissionPending) {
+      status = "waiting";
+    } else if (s.stopReason === "end_turn" && s.lastToolUse && /ask/i.test(s.lastToolUse)) {
+      status = "waiting";
+    } else if (ageMs < ACTIVE_THRESHOLD_MS) {
+      status = "active";
+    } else if (s.stopReason === "tool_use" && ageMs > STUCK_THRESHOLD_MS) {
+      status = "stuck";
+    } else if (s.backgroundTasks > 0 && ageMs < IDLE_THRESHOLD_MS) {
+      status = "active";
+    } else if (ageMs < IDLE_THRESHOLD_MS) {
+      status = "idle";
+    } else if (ageMs > CLOSEABLE_THRESHOLD_MS) {
+      status = "closeable";
+    }
 
     return {
       sessionId: s.sessionId,
@@ -300,6 +355,10 @@ export function parseRemoteSessions(remoteData) {
       branch: s.gitBranch || null,
       version: s.version || null,
       hasError: s.hasError,
+      stopReason: s.stopReason || null,
+      lastToolUse: s.lastToolUse || null,
+      backgroundTasks: s.backgroundTasks || 0,
+      permissionPending: s.permissionPending || false,
       fileSize: s.fileSize,
       lastModified: s.mtime * 1000,
     };

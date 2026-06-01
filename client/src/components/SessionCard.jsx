@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { C, STATUS_MAP } from "./theme.js";
 import { formatDuration, timeAgo, estimateCost, formatCost, contextPercent, contextColor } from "./helpers.js";
 import { StatusDot } from "./StatusDot.jsx";
@@ -24,25 +25,70 @@ function StatItem({ label, value, color }) {
   );
 }
 
-export function SessionCard({ session, expanded, onToggle, isAgent }) {
+function ActionButton({ label, title, onClick, color }) {
+  return (
+    <button
+      title={title}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      style={{
+        padding: "2px 6px", borderRadius: 4, border: `1px solid ${color}30`,
+        backgroundColor: "transparent", color, fontSize: 12, lineHeight: 1,
+        fontFamily: "'JetBrains Mono', monospace", cursor: "pointer",
+        transition: "all 0.15s",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = color + "18"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+    >
+      {label}
+    </button>
+  );
+}
+
+export function SessionCard({ session, expanded, onToggle, isAgent, onOpenTerminal, onAction }) {
   const s = STATUS_MAP[session.status] || STATUS_MAP.completed;
   const elapsed = session.firstTimestamp ? Date.now() - new Date(session.firstTimestamp).getTime() : 0;
   const cost = estimateCost(session.model, session.tokens);
   const agentCount = session._agents?.length || 0;
   const ctxPct = contextPercent(session.tokens?.lastInput, session.model);
   const ctxCol = contextColor(ctxPct);
+  const longPressTimer = useRef(null);
+  const didLongPress = useRef(false);
+
+  const startPress = () => {
+    didLongPress.current = false;
+    if (!onOpenTerminal) return;
+    longPressTimer.current = setTimeout(() => {
+      didLongPress.current = true;
+      onOpenTerminal();
+    }, 500);
+  };
+
+  const cancelPress = () => {
+    clearTimeout(longPressTimer.current);
+  };
+
+  const handleClick = () => {
+    if (didLongPress.current) return;
+    onToggle();
+  };
 
   return (
     <div
-      onClick={onToggle}
+      onClick={handleClick}
+      onMouseDown={startPress}
+      onMouseUp={cancelPress}
+      onMouseLeave={(e) => { cancelPress(); if (!expanded) e.currentTarget.style.borderColor = C.border; e.currentTarget.style.backgroundColor = C.surface; }}
+      onTouchStart={startPress}
+      onTouchEnd={cancelPress}
+      onTouchCancel={cancelPress}
       style={{
         backgroundColor: C.surface, border: `1px solid ${expanded ? s.color + "40" : C.border}`,
         borderRadius: 8, padding: isAgent ? "12px 16px" : 16, cursor: "pointer", transition: "all 0.2s ease",
-        position: "relative", overflow: "hidden",
+        position: "relative", overflow: "visible",
         marginLeft: isAgent ? 28 : 0,
+        userSelect: "none", WebkitUserSelect: "none",
       }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = s.color + "60"; e.currentTarget.style.backgroundColor = C.surfaceHover; }}
-      onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.borderColor = C.border; e.currentTarget.style.backgroundColor = C.surface; }}
     >
       {isAgent && (
         <div style={{ position: "absolute", left: -14, top: 0, bottom: 0, width: 2, backgroundColor: C.border }} />
@@ -51,7 +97,7 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
         <div style={{ position: "absolute", left: -14, top: "50%", width: 12, height: 2, backgroundColor: C.border }} />
       )}
 
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, backgroundColor: s.color, opacity: session.status === "active" ? 0.8 : 0.3 }} />
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, backgroundColor: s.color, opacity: session.status === "active" ? 0.8 : 0.3, borderRadius: "8px 8px 0 0" }} />
 
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
@@ -65,8 +111,35 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
           {agentCount > 0 && (
             <Badge color={C.purple} bg={C.purpleDim}>{agentCount} agent{agentCount > 1 ? "s" : ""}</Badge>
           )}
+          {session.tool === "codex" && (
+            <Badge color="#10b981" bg="#10b98118">codex</Badge>
+          )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          {onAction && (
+            <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
+              {(session.status === "idle" || session.status === "completed" || session.status === "error") && (
+                <ActionButton label="▶" title="Resume session" color={C.green}
+                  onClick={() => onAction(session.sessionId, session.host, "resume")} />
+              )}
+              <ActionButton label="⑂" title="Fork session" color={C.purple}
+                onClick={() => onAction(session.sessionId, session.host, "fork")} />
+              {(session.status === "active" || session.status === "idle" || session.status === "stuck") && (
+                <ActionButton label="✕" title="Close session" color={C.red}
+                  onClick={() => {
+                    if (window.confirm(`Close session ${session.sessionId?.slice(0, 8)}?`)) {
+                      onAction(session.sessionId, session.host, "close");
+                    }
+                  }} />
+              )}
+            </div>
+          )}
+          {onOpenTerminal && (
+            <button onClick={(e) => { e.stopPropagation(); onOpenTerminal(); }} title="Open WebSSH terminal"
+              style={{ background: "#58a6ff18", border: "1px solid #58a6ff55", borderRadius: 4, color: "#58a6ff", cursor: "pointer", padding: "2px 8px", fontSize: 11, fontFamily: "monospace", fontWeight: 600 }}>
+              SSH
+            </button>
+          )}
           <Badge color={s.color} bg={s.bg}>{s.label}</Badge>
           <span style={{ fontSize: 10, color: C.textMuted, fontFamily: "monospace" }}>{session.host}</span>
         </div>
@@ -79,7 +152,7 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
         {session.lastAssistantMessage || session.summary || "—"}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 11, color: C.textMuted, fontFamily: "monospace" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 11, color: C.textMuted, fontFamily: "monospace", flexWrap: "wrap", marginBottom: 8 }}>
         <span title="Messages">💬 {session.messages || 0}</span>
         <span title="Tool calls">🔧 {session.toolCalls || 0}</span>
         {elapsed > 0 && <span title="Duration">⏱ {formatDuration(elapsed)}</span>}
@@ -95,6 +168,17 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
         )}
       </div>
 
+      <button
+        onClick={(e) => { e.stopPropagation(); onOpenTerminal(); }}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          padding: "6px 0", borderRadius: 6,
+          border: "1px solid #58a6ff55", background: "#58a6ff12",
+          color: "#58a6ff", cursor: "pointer",
+          fontSize: 12, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600,
+        }}
+      >⌨ WebSSH</button>
+
       {expanded && (
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.border}`, animation: "fadeIn 0.2s ease" }}>
           {(session.lastUserMessage || session.lastAssistantMessage) && (
@@ -107,7 +191,7 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
               )}
               {session.lastAssistantMessage && (
                 <div style={{ padding: "8px 12px", borderRadius: 6, backgroundColor: "rgba(167,139,250,0.05)", borderLeft: `2px solid ${C.purple}` }}>
-                  <div style={{ fontSize: 10, color: C.purple, marginBottom: 4, fontFamily: "monospace" }}>Claude</div>
+                  <div style={{ fontSize: 10, color: C.purple, marginBottom: 4, fontFamily: "monospace" }}>{session.tool === "codex" ? "Codex" : "Claude"}</div>
                   <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5, wordBreak: "break-word" }}>{session.lastAssistantMessage}</div>
                 </div>
               )}
@@ -148,6 +232,21 @@ export function SessionCard({ session, expanded, onToggle, isAgent }) {
             <span>ID: {session.sessionId || "—"}</span>
           </div>
           <CopyCommand text={`ssh -t ${session.host} 'tmux attach -t ${session.project?.name || "session"}'`} />
+          {onOpenTerminal && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onOpenTerminal(); }}
+              style={{
+                marginTop: 8,
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 14px", borderRadius: 6,
+                border: "1px solid #58a6ff55", background: "#58a6ff18",
+                color: "#58a6ff", cursor: "pointer",
+                fontSize: 12, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600,
+              }}
+            >
+              ⌨ WebSSH
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -4,10 +4,17 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   server: {
+    allowedHosts: ["monitor.xiangpan.org", "claude.xiangpan.org", "claude-dev.xiangpan.org"],
     proxy: {
-      "/ws": {
-        target: "ws://localhost:3456",
+      "/ws/ssh": {
+        target: process.env.CCM_HTTPS ? "wss://localhost:3456" : "ws://localhost:3456",
         ws: true,
+        secure: false, // accept self-signed certs
+      },
+      "/ws": {
+        target: process.env.CCM_HTTPS ? "wss://localhost:3456" : "ws://localhost:3456",
+        ws: true,
+        secure: false,
         configure: (proxy) => {
           proxy.on("proxyReqWs", (_proxyReq, _req, socket) => {
             socket.on("error", (err) => {
@@ -22,7 +29,8 @@ export default defineConfig({
         },
       },
       "/api": {
-        target: "http://localhost:3456",
+        target: process.env.CCM_HTTPS ? "https://localhost:3456" : "http://localhost:3456",
+        secure: false,
       },
     },
   },

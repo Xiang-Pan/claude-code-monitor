@@ -21,8 +21,10 @@ export const C = {
 
 export const STATUS_MAP = {
   active: { label: "Active", color: C.green, bg: C.greenDim, pulse: true },
-  idle: { label: "Idle", color: C.amber, bg: C.amberDim, pulse: false },
+  waiting: { label: "Waiting", color: C.red, bg: C.redDim, pulse: true },
   stuck: { label: "Stuck", color: C.amber, bg: C.amberDim, pulse: false },
+  idle: { label: "Idle", color: C.amber, bg: C.amberDim, pulse: false },
   completed: { label: "Done", color: C.textMuted, bg: "rgba(107,114,128,0.08)", pulse: false },
+  closeable: { label: "Closeable", color: C.textDim, bg: "rgba(61,68,82,0.08)", pulse: false },
   error: { label: "Error", color: C.red, bg: C.redDim, pulse: false },
 };

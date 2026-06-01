@@ -12,6 +12,9 @@ import { HostStatus } from "./components/HostStatus.jsx";
 import { TmuxPanel } from "./components/TmuxPanel.jsx";
 import { getStatusNotification, getHookNotification } from "./notifications.js";
 import { LivePulseChart } from "./components/LivePulseChart.jsx";
+import { SshTerminal } from "./components/SshTerminal.jsx";
+import { ActivityBar } from "./components/ActivityBar.jsx";
+import { SearchPanel } from "./components/SearchPanel.jsx";
 
 // ─── Notification sound (short beep via Web Audio API) ─────
 let _audioCtx = null;
@@ -100,13 +103,17 @@ function stopTts() {
 }
 
 // ─── Toast component ───────────────────────────────────────
-function ToastContainer({ toasts, onDismiss }) {
+function ToastContainer({ toasts, onDismiss, onOpenTerminal }) {
   return (
     <div style={{ position: "fixed", top: 16, right: 16, zIndex: 9999, display: "flex", flexDirection: "column", gap: 8, maxWidth: 360 }}>
       {toasts.map((t) => (
-        <div key={t.id} onClick={() => onDismiss(t.id)} style={{
+        <div key={t.id} onClick={() => {
+          onDismiss(t.id);
+          if (t.session) onOpenTerminal(t.session);
+        }} style={{
           padding: "12px 16px", borderRadius: 8,
-          backgroundColor: t.color || "#1e3a5f", border: "1px solid #60a5fa",
+          backgroundColor: t.color || "#1e3a5f",
+          border: `1px solid ${t.session ? "#58a6ff" : "#60a5fa"}`,
           color: "#e2e5eb", fontFamily: "'JetBrains Mono', monospace", fontSize: 12,
           cursor: "pointer", boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
           animation: "fadeIn 0.3s ease-out",
@@ -258,21 +265,52 @@ function Dashboard() {
   const [voiceTypes, setVoiceTypes] = usePersistedState("voiceTypes", ["completed", "error", "idle", "stuck"]);
   const [ttsVoice, setTtsVoice] = usePersistedState("ttsVoice", "zh-CN-XiaoxiaoNeural");
   const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [demoMode, setDemoMode] = useState(false);
   const [demoData, setDemoData] = useState(null);
   const [tick, setTick] = useState(0);
+  const [sshTarget, setSshTarget] = useState(null);
+  const [sshHosts, setSshHosts] = useState([]);
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, []);
   const prevStatusesRef = useRef({});
   const [toasts, setToasts] = useState([]);
 
-  const addToast = useCallback((title, body, color) => {
+  useEffect(() => {
+    fetch("/api/ssh-hosts").then(r => r.json()).then(d => setSshHosts(d.hosts || [])).catch(() => {});
+  }, []);
+
+  const addToast = useCallback((title, body, color, session) => {
     const id = Date.now() + Math.random();
-    setToasts((prev) => [{ id, title, body, color }, ...prev].slice(0, 5));
+    setToasts((prev) => [{ id, title, body, color, session }, ...prev].slice(0, 5));
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
   }, []);
 
   const dismissToast = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  const handleAction = useCallback(async (sessionId, host, action) => {
+    try {
+      const res = await fetch(`/api/actions/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, host }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        addToast(action.charAt(0).toUpperCase() + action.slice(1), data.message || "Done");
+      } else {
+        addToast("Error", data.error || "Action failed", "#3b1a1a");
+      }
+    } catch (err) {
+      addToast("Error", err.message || "Network error", "#3b1a1a");
+    }
+  }, [addToast]);
 
   // ─── Close voice menu on outside click ──────────────────
   const voiceMenuRef = useRef(null);
@@ -283,8 +321,12 @@ function Dashboard() {
     return () => document.removeEventListener("mousedown", handler);
   }, [voiceMenuOpen]);
 
-  // ─── Desktop Notifications ────────────────────────────────
+  // ─── Service Worker + Notifications ───────────────────────
   useEffect(() => {
+    // Register SW (required for iOS Safari PWA notifications)
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
@@ -305,7 +347,7 @@ function Dashboard() {
       if (oldStatus !== s.status) {
         const n = getStatusNotification(s, oldStatus);
         if (n) {
-          addToast(n.title, n.body, s.status === "error" ? "#3b1a1a" : undefined);
+          addToast(n.title, n.body, s.status === "error" ? "#3b1a1a" : undefined, s);
           playNotificationSound();
           if (voiceTypes.includes(n.type)) speakNotification(`${n.title}. ${n.body}`);
           if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -436,9 +478,26 @@ function Dashboard() {
     { key: "7d", label: "Last 7d" },
   ];
 
+  const openTerminal = (session) => {
+    const hostId = session.host;
+    const hostInfo = sshHosts.find(h => h.name === hostId);
+    if (!hostInfo) {
+      addToast("No SSH", `${hostId} is not configured as an SSH host`, "#3b1a1a");
+      return;
+    }
+    const cmd = session.tmux
+      ? `tmux a -t ${session.tmux.session}`
+      : "tmux new-session -A -s main";
+    const title = session.tmux
+      ? `${hostId} › ${session.tmux.session}`
+      : hostId;
+    setSshTarget({ hostId, cmd, title });
+  };
+
+
   return (
-    <div style={{ minHeight: "100vh", backgroundColor: C.bg, color: C.text, fontFamily: "'Inter', -apple-system, sans-serif", padding: "24px 28px" }}>
-      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden", backgroundColor: C.bg, color: C.text, fontFamily: "'Inter', -apple-system, sans-serif" }}>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} onOpenTerminal={openTerminal} />
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
         @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.4; } 50% { transform: scale(2); opacity: 0; } }
@@ -447,18 +506,48 @@ function Dashboard() {
         ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }
       `}</style>
 
+      {/* Left activity bar */}
+      <ActivityBar
+        sshPool={data?.sshPool}
+        sshHosts={sshHosts}
+        onOpenTerminal={setSshTarget}
+        isMobile={isMobile}
+      />
+
+      {/* Main scrollable content */}
+      <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "12px 12px" : "24px 28px", minWidth: 0, display: sshTarget && isMobile ? "none" : undefined }}>
+
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: "#e2e5eb", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "-0.02em" }}>
-            <span style={{ color: C.accent }}>⬡</span> Claude Code Monitor
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: isMobile ? 12 : 20 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <h1 style={{ fontSize: isMobile ? 15 : 20, fontWeight: 700, color: "#e2e5eb", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "-0.02em" }}>
+            <span style={{ color: C.accent }}>⬡</span>{isMobile ? " CCM" : " Claude Code Monitor"}
           </h1>
           <span style={{ fontSize: 11, color: C.textDim, fontFamily: "monospace" }}>
             {sessions.length} sessions
           </span>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {connected && <CountdownTimer pollIntervalMs={pollIntervalMs} lastUpdated={lastUpdated} onRefresh={requestRefresh} />}
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {connected && !isMobile && <CountdownTimer pollIntervalMs={pollIntervalMs} lastUpdated={lastUpdated} onRefresh={requestRefresh} />}
+
+          <button
+            onClick={() => setSearchOpen(!searchOpen)}
+            title="Search transcripts"
+            style={{
+              padding: "5px 10px", borderRadius: 6,
+              border: `1px solid ${searchOpen ? C.accent + "40" : C.border}`,
+              backgroundColor: searchOpen ? C.accentDim : "transparent",
+              color: searchOpen ? C.accent : C.textMuted,
+              fontSize: 11, fontFamily: "monospace", cursor: "pointer",
+              transition: "all 0.15s", display: "flex", alignItems: "center", gap: 4,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            Search
+          </button>
 
           <div style={{ display: "flex", borderRadius: 6, border: `1px solid ${C.border}`, overflow: "hidden" }}>
             <button onClick={() => setViewMode("cards")} style={{
@@ -562,10 +651,30 @@ function Dashboard() {
         </div>
       </div>
 
+      {/* Search panel */}
+      {searchOpen && <SearchPanel onClose={() => setSearchOpen(false)} />}
+
       {/* Host status */}
       {data?.aggregate?.hosts && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 8, overflowX: "auto", flexWrap: isMobile ? "nowrap" : "wrap", paddingBottom: isMobile ? 4 : 0 }}>
           <HostStatus hosts={data.aggregate.hosts} hostFilter={hostFilter} onHostClick={(h) => { setHostFilter(hostFilter === h ? "all" : h); }} />
+          {sshHosts.map(h => {
+            const poolInfo = data?.sshPool?.[h.name];
+            const isBroken = poolInfo && (poolInfo.status === "disconnected" || poolInfo.status === "reconnecting");
+            return (
+              <button key={h.name} onClick={() => setSshTarget({
+                hostId: h.name, cmd: null,
+                title: isBroken ? `fix: ${h.name}` : h.name,
+                fix: isBroken || undefined,
+              })} style={{
+                padding: "4px 10px", borderRadius: 4, border: `1px solid ${isBroken ? "#f8717140" : "#30363d"}`,
+                backgroundColor: isBroken ? "rgba(248,113,113,0.08)" : "transparent",
+                color: isBroken ? "#f87171" : "#58a6ff",
+                fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+                cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+              }}>{isBroken ? "⌨ fix " : "⌨ "}{h.name}</button>
+            );
+          })}
         </div>
       )}
 
@@ -667,6 +776,8 @@ function Dashboard() {
                   expanded={expandedId === uid}
                   onToggle={() => setExpandedId(expandedId === uid ? null : uid)}
                   isAgent={false}
+                  onOpenTerminal={() => openTerminal(session)}
+                  onAction={handleAction}
                 />
                 {agents.map(agent => {
                   const auid = `${agent.sessionId}:${agent.host}`;
@@ -677,6 +788,7 @@ function Dashboard() {
                         expanded={expandedId === auid}
                         onToggle={() => setExpandedId(expandedId === auid ? null : auid)}
                         isAgent={true}
+                        onAction={handleAction}
                       />
                     </div>
                   );
@@ -842,14 +954,39 @@ function Dashboard() {
       })()}
 
       {/* Footer */}
-      <div style={{
+      {!isMobile && <div style={{
         marginTop: 20, padding: "12px 0", borderTop: `1px solid ${C.border}`,
         display: "flex", justifyContent: "space-between",
         fontSize: 10, color: C.textDim, fontFamily: "monospace",
       }}>
         <span>Data: ~/.claude/projects/**/*.jsonl + stats-cache.json</span>
         <span>{data?.updatedAt ? `Updated: ${new Date(data.updatedAt).toLocaleTimeString()}` : ""}</span>
-      </div>
+      </div>}
+
+      </div>{/* end main scrollable */}
+
+      {/* Right terminal panel */}
+      {sshTarget && (
+        <div style={isMobile ? {
+          position: "fixed", inset: 0, zIndex: 200,
+          display: "flex", flexDirection: "column",
+          backgroundColor: "#0d1117",
+        } : {
+          width: "45%", flexShrink: 0,
+          borderLeft: `1px solid ${C.border}`,
+          display: "flex", flexDirection: "column",
+          backgroundColor: "#0d1117",
+        }}>
+          <SshTerminal
+            key={`${sshTarget.hostId}-${sshTarget.cmd || ""}-${sshTarget.fix || ""}`}
+            hostId={sshTarget.hostId}
+            cmd={sshTarget.cmd}
+            title={sshTarget.title}
+            fix={sshTarget.fix}
+            onClose={() => setSshTarget(null)}
+          />
+        </div>
+      )}
     </div>
   );
 }

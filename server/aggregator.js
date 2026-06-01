@@ -8,6 +8,8 @@ export class Aggregator {
     this.hosts = new Map();
     // Map<hostName, tmuxData>
     this.tmux = new Map();
+    // SSH pool status: { hostName: { status, alias, connectedAt, error } }
+    this.sshPool = {};
     this.listeners = new Set();
   }
 
@@ -16,6 +18,14 @@ export class Aggregator {
    */
   update(hostData) {
     this.hosts.set(hostData.host, hostData);
+    this.notify();
+  }
+
+  /**
+   * Update SSH pool connection status.
+   */
+  updateSSHPool(statusMap) {
+    this.sshPool = statusMap;
     this.notify();
   }
 
@@ -35,6 +45,7 @@ export class Aggregator {
     const hostStatuses = [];
 
     for (const [name, data] of this.hosts) {
+      const sshInfo = this.sshPool[name] || null;
       hostStatuses.push({
         name,
         status: data.status,
@@ -42,6 +53,7 @@ export class Aggregator {
         sessionCount: data.sessions?.length || 0,
         collectedAt: data.collectedAt,
         statsCache: data.statsCache || null,
+        ssh: sshInfo ? { status: sshInfo.status, connectedAt: sshInfo.connectedAt, error: sshInfo.error } : null,
       });
 
       if (data.sessions) {
@@ -79,7 +91,7 @@ export class Aggregator {
     }
 
     // Sort: active first, then stuck, idle, error, completed
-    const statusOrder = { active: 0, stuck: 1, idle: 2, error: 3, completed: 4 };
+    const statusOrder = { active: 0, waiting: 1, stuck: 2, idle: 3, error: 4, completed: 5, closeable: 6 };
     allSessions.sort((a, b) => {
       const orderDiff = (statusOrder[a.status] ?? 5) - (statusOrder[b.status] ?? 5);
       if (orderDiff !== 0) return orderDiff;
@@ -165,6 +177,7 @@ export class Aggregator {
       sessions: allSessions,
       aggregate,
       tmux: tmuxHosts,
+      sshPool: this.sshPool,
       updatedAt: Date.now(),
     };
   }

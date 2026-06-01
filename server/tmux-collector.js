@@ -227,6 +227,11 @@ export async function collectTmuxSSH(hostConfig) {
     "-o", "BatchMode=yes",
   ];
 
+  // Reuse persistent ControlMaster connection if available
+  if (hostConfig._controlPath) {
+    sshArgs.push("-o", `ControlPath=${hostConfig._controlPath}`);
+  }
+
   if (sshAlias) {
     sshArgs.push(sshAlias);
   } else {
